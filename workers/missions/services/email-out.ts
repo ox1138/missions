@@ -61,20 +61,33 @@ export async function sendEmail(
 		metadata: { thread_id: input.threadId, message_id: messageId },
 	});
 
-	// Delivery. If the Workers `send_email` binding (EMAIL) is present AND we
-	// are not in a local-dev context, ship the message. Otherwise log it for
-	// observation in the activity stream (already recorded above).
+	// Delivery. Priority order:
+	//   1. Resend (works for any recipient if your domain is verified there)
+	//   2. Workers `send_email` binding (CF Email Routing — pre-verified only)
+	//   3. No-op fallback so local dev still "runs" without real delivery
 	let delivered = false;
 	try {
-		delivered = await deliverViaBinding(env, {
-			from: input.from,
-			to: input.to,
-			cc: input.cc,
-			subject: input.subject,
-			body: input.body,
-			messageId,
-			replyTo,
-		});
+		if (env.RESEND_API_KEY) {
+			delivered = await deliverViaResend(env, {
+				from: input.from,
+				to: input.to,
+				cc: input.cc,
+				subject: input.subject,
+				body: input.body,
+				messageId,
+				replyTo,
+			});
+		} else {
+			delivered = await deliverViaBinding(env, {
+				from: input.from,
+				to: input.to,
+				cc: input.cc,
+				subject: input.subject,
+				body: input.body,
+				messageId,
+				replyTo,
+			});
+		}
 	} catch (err) {
 		console.warn(
 			`[email-out] delivery failed for ${input.to}:`,
@@ -84,6 +97,37 @@ export async function sendEmail(
 	}
 
 	return { messageId, replyTo, delivered };
+}
+
+// ── Delivery via Resend ──────────────────────────────────────────────
+
+async function deliverViaResend(
+	env: Env,
+	d: DeliverInput,
+): Promise<boolean> {
+	const res = await fetch("https://api.resend.com/emails", {
+		method: "POST",
+		headers: {
+			"Authorization": `Bearer ${env.RESEND_API_KEY}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			from: d.from,
+			to: [d.to],
+			cc: d.cc ? [d.cc] : undefined,
+			subject: d.subject,
+			text: d.body,
+			reply_to: d.replyTo,
+			headers: {
+				"Message-ID": d.messageId,
+			},
+		}),
+	});
+	if (!res.ok) {
+		const body = await res.text();
+		throw new Error(`Resend ${res.status}: ${body}`);
+	}
+	return true;
 }
 
 function domainFromEmail(email: string): string {

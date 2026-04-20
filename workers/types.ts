@@ -9,4 +9,9 @@ export interface Env extends Cloudflare.Env {
 	// Missions-specific secrets (local: .dev.vars; prod: wrangler secret put)
 	ANTHROPIC_API_KEY: string;
 	HMAC_SECRET: string;
+
+	// Optional Resend API key — if set, outbound email goes via Resend
+	// instead of the Workers send_email binding. Required for cold outreach
+	// since the CF binding only delivers to pre-verified destinations.
+	RESEND_API_KEY?: string;
 }
