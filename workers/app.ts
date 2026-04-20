@@ -9,6 +9,10 @@ import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
 import type { Env } from "./types";
+import {
+	streamToArrayBuffer,
+	tryHandleMissionsInbound,
+} from "./missions/services/email-in";
 
 export { MailboxDO } from "./durableObject";
 export { EmailAgent } from "./agent";
@@ -117,7 +121,26 @@ export default {
 		ctx: ExecutionContext,
 	) {
 		try {
-			await receiveEmail(event, env, ctx);
+			// Buffer the raw email once so both handlers can see the same bytes.
+			const raw = await streamToArrayBuffer(event.raw, event.rawSize);
+
+			// Try Missions reply routing first (reply+<hmac>@domain addresses).
+			const claimed = await tryHandleMissionsInbound(raw, env);
+			if (claimed) return;
+
+			// Fall through to the base agentic-inbox mailbox handler. Replay the
+			// buffered bytes as a fresh stream since the original was consumed.
+			const replayStream = new ReadableStream({
+				start(controller) {
+					controller.enqueue(raw);
+					controller.close();
+				},
+			});
+			await receiveEmail(
+				{ raw: replayStream, rawSize: raw.byteLength },
+				env,
+				ctx,
+			);
 		} catch (e) {
 			console.error("Failed to process incoming email:", (e as Error).message, (e as Error).stack);
 			// Re-throw so Cloudflare's email routing can retry delivery or bounce the message.
