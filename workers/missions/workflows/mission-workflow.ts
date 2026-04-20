@@ -300,7 +300,7 @@ async function advanceToOutreach(
 		});
 
 		// Send email — this also records the contact interaction.
-		await sendEmail(env, mdo, {
+		const sendResult = await sendEmail(env, mdo, {
 			missionId,
 			threadId: thread.id,
 			from: agentEmail,
@@ -313,9 +313,15 @@ async function advanceToOutreach(
 		await mdo.setTargetStatus(t.id, "contacted");
 		await mdo.logActivity({
 			missionId,
-			type: "email.sent",
-			description: `Sent first-touch email to ${t.email}: "${draft.subject}"`,
-			metadata: { thread_id: thread.id, subject: draft.subject },
+			type: sendResult.delivered ? "email.sent" : "email.drafted",
+			description: sendResult.delivered
+				? `Sent first-touch email to ${t.email}: "${draft.subject}"`
+				: `Drafted (not delivered — no Email Service bound) to ${t.email}: "${draft.subject}"`,
+			metadata: {
+				thread_id: thread.id,
+				subject: draft.subject,
+				delivered: sendResult.delivered,
+			},
 		});
 	}
 
