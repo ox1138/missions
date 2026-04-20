@@ -582,12 +582,210 @@ export async function handleApprovalResolution(
 	approvalId: string,
 	resolution: unknown,
 ): Promise<void> {
-	// Mark approval resolved in storage.
-	await mdo.resolveApproval(approvalId, resolution);
-	// TODO: read approval context and route to the appropriate follow-up
-	// (e.g. freeform for a reply → send user's text as the outbound).
-	// For MVP, silent-confirm is the most important path and it's handled by
-	// the alarm/timeout. Reply-approval resumption is wired in Phase 5.
+	const approval = await mdo.getApproval(approvalId);
+	if (!approval || approval.status !== "pending") return;
+
+	const ctx = approval.context ? JSON.parse(approval.context) : {};
+	const phase = ctx.phase as string | undefined;
+
+	const resolved = (r: unknown = resolution) =>
+		mdo.resolveApproval(approvalId, r, "resolved");
+
+	// ── silent_confirm (handoff): user either proceeds early or cancels ──
+	if (approval.type === "silent_confirm" && phase === "handoff") {
+		const decision = (resolution as { decision?: "send_now" | "cancel" })?.decision;
+		if (decision === "cancel") {
+			// Abort the handoff — thread returns to awaiting.
+			await mdo.setThreadStatus(approval.thread_id!, "awaiting");
+			await mdo.logActivity({
+				missionId: approval.mission_id,
+				type: "handoff.cancelled_by_user",
+				description: "User cancelled the pending handoff.",
+				metadata: { thread_id: approval.thread_id },
+			});
+			await resolved();
+			return;
+		}
+		// Default (send_now or any non-cancel): execute the proposed action now.
+		if (approval.proposed_action) {
+			const proposed = JSON.parse(approval.proposed_action) as {
+				kind: "send_handoff";
+				from: string;
+				to: string;
+				cc?: string;
+				subject: string;
+				body: string;
+			};
+			const mission = (await mdo.getMission(approval.mission_id))!;
+			await sendEmail(env, mdo, {
+				missionId: mission.id,
+				threadId: approval.thread_id!,
+				from: proposed.from,
+				to: proposed.to,
+				cc: proposed.cc,
+				subject: proposed.subject,
+				body: proposed.body,
+				agentId: mission.agent_id,
+			});
+			await mdo.setThreadStatus(approval.thread_id!, "human");
+			await mdo.setPhase(mission.id, "complete");
+			await mdo.logActivity({
+				missionId: mission.id,
+				type: "handoff.sent",
+				description: `Handoff email sent (user-approved early) to ${proposed.to}.`,
+				metadata: { thread_id: approval.thread_id },
+			});
+		}
+		await resolved();
+		return;
+	}
+
+	// ── freeform on understand: user answered the clarifying question ────
+	if (approval.type === "freeform" && phase === "understand") {
+		const answer = (resolution as { text?: string })?.text ?? "";
+		// Append the answer to the mission brief and restart from research.
+		// This skips running understand again — the user's answer is the
+		// disambiguation, we don't need to re-classify clarity.
+		const mission = (await mdo.getMission(approval.mission_id))!;
+		const enriched = `${mission.brief}\n\n---\nClarification from user: ${answer}`;
+		await mdo.logActivity({
+			missionId: mission.id,
+			type: "understand.clarified",
+			description: `User answered: ${answer.slice(0, 200)}`,
+		});
+		await mdo.addResearchLog({
+			mission_id: mission.id,
+			type: "note",
+			content: `Clarified brief: ${enriched}`,
+			source_url: null,
+			related_contact_id: null,
+		});
+		await resolved();
+		// Kick off research + outreach with the enriched brief. We write
+		// the enriched brief back to the mission row so downstream prompts
+		// see it.
+		// NOTE: setPhase will set phase; the rest runs.
+		await advanceToResearch(mdo, env, mission.id, null);
+		await advanceToOutreach(mdo, env, mission.id);
+		void enriched;
+		return;
+	}
+
+	// ── freeform on reply: user's text becomes/informs the reply ─────────
+	if (approval.type === "freeform" && phase === "reply") {
+		const answer = (resolution as { text?: string })?.text ?? "";
+		const threadId = ctx.thread_id as string;
+		const thread = await mdo.getThread(threadId);
+		if (!thread) {
+			await resolved();
+			return;
+		}
+		const mission = (await mdo.getMission(thread.mission_id))!;
+		const agent = await loadAgent(env, mission.agent_id);
+		const domain = await fetchDomain(env);
+		const agentEmail = `${agent.identity.email_local_part}@${domain}`;
+		const targetEmail = await resolveTargetEmail(mdo, thread);
+		// Send a short reply that uses the user's answer verbatim, in the
+		// agent's voice. We keep this simple for MVP — a proper version
+		// would pass through an integration prompt, but that's a Phase 2
+		// polish. For now, wrap the user's text with a one-line preamble.
+		const body = `${answer}\n\n${agent.identity.signature ?? `— ${agent.identity.name}`}`;
+		const subject = thread.subject ? `Re: ${thread.subject.replace(/^Re:\s*/i, "")}` : "";
+		await sendEmail(env, mdo, {
+			missionId: mission.id,
+			threadId: thread.id,
+			from: agentEmail,
+			to: targetEmail,
+			subject,
+			body,
+			agentId: mission.agent_id,
+		});
+		await mdo.setThreadStatus(thread.id, "active");
+		await mdo.logActivity({
+			missionId: mission.id,
+			type: "reply.sent_with_user_input",
+			description: `Sent reply incorporating the user's answer.`,
+			metadata: { thread_id: thread.id },
+		});
+		await resolved();
+		return;
+	}
+
+	// ── multi_choice on reply: send the chosen option's suggested reply ──
+	if (approval.type === "multi_choice" && phase === "reply") {
+		const chosen = (resolution as { option_id?: string })?.option_id;
+		const options =
+			(approval.options
+				? (JSON.parse(approval.options) as Array<{
+						id: string;
+						label: string;
+						suggested_reply: string;
+					}>)
+				: []) ?? [];
+		const opt = options.find((o) => o.id === chosen);
+		if (!opt) {
+			await resolved();
+			return;
+		}
+		const threadId = ctx.thread_id as string;
+		const thread = await mdo.getThread(threadId);
+		if (!thread) {
+			await resolved();
+			return;
+		}
+		const mission = (await mdo.getMission(thread.mission_id))!;
+		const agent = await loadAgent(env, mission.agent_id);
+		const domain = await fetchDomain(env);
+		const agentEmail = `${agent.identity.email_local_part}@${domain}`;
+		const targetEmail = await resolveTargetEmail(mdo, thread);
+		const subject = thread.subject ? `Re: ${thread.subject.replace(/^Re:\s*/i, "")}` : "";
+		const body = `${opt.suggested_reply}\n\n${agent.identity.signature ?? `— ${agent.identity.name}`}`;
+		await sendEmail(env, mdo, {
+			missionId: mission.id,
+			threadId: thread.id,
+			from: agentEmail,
+			to: targetEmail,
+			subject,
+			body,
+			agentId: mission.agent_id,
+		});
+		await mdo.setThreadStatus(thread.id, "active");
+		await mdo.logActivity({
+			missionId: mission.id,
+			type: "reply.sent_multi_choice",
+			description: `Sent "${opt.label}" reply.`,
+			metadata: { thread_id: thread.id, option_id: opt.id },
+		});
+		await resolved();
+		return;
+	}
+
+	// ── multi_choice on research (ghost target): try_again / skip / show_me ─
+	if (approval.type === "multi_choice" && phase === "research") {
+		const chosen = (resolution as { option_id?: string })?.option_id;
+		const targetId = ctx.target_id as string;
+		if (chosen === "skip") {
+			await mdo.setTargetStatus(targetId, "skipped_prior_history");
+			await mdo.logActivity({
+				missionId: approval.mission_id,
+				type: "target.skipped_by_user",
+				description: `User skipped a ghosted target.`,
+				metadata: { target_id: targetId },
+			});
+		}
+		// try_again leaves the target at status "pending" so the next
+		// advanceToOutreach sweep picks it up. show_me is a read-only
+		// resolution — we close the approval without state change.
+		await resolved();
+		// If try_again, re-run outreach for this target only.
+		if (chosen === "try_again") {
+			await advanceToOutreach(mdo, env, approval.mission_id);
+		}
+		return;
+	}
+
+	// Default: mark resolved with no side effects.
+	await resolved();
 }
 
 // ── Scheduled task dispatcher ────────────────────────────────────────

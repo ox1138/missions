@@ -13,6 +13,7 @@ import {
 	streamToArrayBuffer,
 	tryHandleMissionsInbound,
 } from "./missions/services/email-in";
+import { missionsApp } from "./missions/api";
 
 export { MailboxDO } from "./durableObject";
 export { EmailAgent } from "./agent";
@@ -95,7 +96,11 @@ app.all("/mcp/*", async (c) => {
 	return mcpHandler.fetch(c.req.raw, c.env, c.executionCtx as ExecutionContext);
 });
 
-// Mount the API routes
+// Mount the Missions API first so its routes claim /api/v1/missions/* before
+// the inherited mailbox API can see them.
+app.route("/api/v1/missions", missionsApp);
+
+// Mount the inherited (agentic-inbox) API routes.
 app.route("/", apiApp);
 
 // Agent WebSocket routing - must be before React Router catch-all
