@@ -5,4 +5,8 @@
 export interface Env extends Cloudflare.Env {
 	POLICY_AUD: string;
 	TEAM_DOMAIN: string;
+
+	// Missions-specific secrets (local: .dev.vars; prod: wrangler secret put)
+	ANTHROPIC_API_KEY: string;
+	HMAC_SECRET: string;
 }

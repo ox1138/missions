@@ -1,3 +1,10 @@
 # Cloudflare Access (required in production). TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 POLICY_AUD=your-access-policy-audience-tag
 TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+
+# Anthropic API key for agent drafting (first-party Claude via AI Gateway in prod)
+ANTHROPIC_API_KEY=sk-ant-...
+
+# HMAC secret used to sign Reply-To tokens on outbound mail so inbound replies
+# can be routed to the right Mission/Thread/Target. Any random 32+ byte string.
+HMAC_SECRET=local-dev-hmac-secret-rotate-before-prod
