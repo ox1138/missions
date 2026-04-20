@@ -8,9 +8,3 @@ ANTHROPIC_API_KEY=sk-ant-...
 # HMAC secret used to sign Reply-To tokens on outbound mail so inbound replies
 # can be routed to the right Mission/Thread/Target. Any random 32+ byte string.
 HMAC_SECRET=local-dev-hmac-secret-rotate-before-prod
-
-# Optional: Resend API key for outbound delivery. If set, Otto's emails go
-# via Resend (works for any recipient on a domain you've verified in Resend).
-# If unset, we fall through to the CF send_email binding which only works
-# for pre-verified destinations.
-RESEND_API_KEY=re_...

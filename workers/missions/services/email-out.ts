@@ -1,7 +1,9 @@
-// Outbound email send. Phase 4 will add HMAC-signed Reply-To routing and
-// real delivery via the Workers send_email binding. For Phase 3 we implement
-// the shape and the side-effects (message persistence + contact ingestion)
-// so the workflow can run end-to-end with delivery mocked.
+// Outbound email send via the Cloudflare Email Service binding (env.EMAIL).
+// Uses the modern structured send() API — see workers/email-sender.ts for
+// the canonical pattern. On paid plans this delivers to arbitrary
+// recipients; on free plans only to verified Email Routing destinations.
+// The HMAC-signed Reply-To encodes (mission, thread, target) so inbound
+// replies route back to the right MissionDO.
 
 import type { Env } from "../../types";
 import type { MissionDO } from "../mission-do";
@@ -61,33 +63,18 @@ export async function sendEmail(
 		metadata: { thread_id: input.threadId, message_id: messageId },
 	});
 
-	// Delivery. Priority order:
-	//   1. Resend (works for any recipient if your domain is verified there)
-	//   2. Workers `send_email` binding (CF Email Routing — pre-verified only)
-	//   3. No-op fallback so local dev still "runs" without real delivery
+	// Delivery via the Cloudflare Email Service binding.
 	let delivered = false;
 	try {
-		if (env.RESEND_API_KEY) {
-			delivered = await deliverViaResend(env, {
-				from: input.from,
-				to: input.to,
-				cc: input.cc,
-				subject: input.subject,
-				body: input.body,
-				messageId,
-				replyTo,
-			});
-		} else {
-			delivered = await deliverViaBinding(env, {
-				from: input.from,
-				to: input.to,
-				cc: input.cc,
-				subject: input.subject,
-				body: input.body,
-				messageId,
-				replyTo,
-			});
-		}
+		delivered = await deliverViaBinding(env, {
+			from: input.from,
+			to: input.to,
+			cc: input.cc,
+			subject: input.subject,
+			body: input.body,
+			messageId,
+			replyTo,
+		});
 	} catch (err) {
 		console.warn(
 			`[email-out] delivery failed for ${input.to}:`,
@@ -97,37 +84,6 @@ export async function sendEmail(
 	}
 
 	return { messageId, replyTo, delivered };
-}
-
-// ── Delivery via Resend ──────────────────────────────────────────────
-
-async function deliverViaResend(
-	env: Env,
-	d: DeliverInput,
-): Promise<boolean> {
-	const res = await fetch("https://api.resend.com/emails", {
-		method: "POST",
-		headers: {
-			"Authorization": `Bearer ${env.RESEND_API_KEY}`,
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify({
-			from: d.from,
-			to: [d.to],
-			cc: d.cc ? [d.cc] : undefined,
-			subject: d.subject,
-			text: d.body,
-			reply_to: d.replyTo,
-			headers: {
-				"Message-ID": d.messageId,
-			},
-		}),
-	});
-	if (!res.ok) {
-		const body = await res.text();
-		throw new Error(`Resend ${res.status}: ${body}`);
-	}
-	return true;
 }
 
 function domainFromEmail(email: string): string {
@@ -147,10 +103,9 @@ async function buildReplyTo(env: Env, input: SendEmailInput): Promise<string> {
 	return `reply+${token}@${domain}`;
 }
 
-// ── Delivery via the Workers send_email binding ──────────────────────
-// The binding accepts a MIME-formatted email. We build a minimal one here.
-// Real production would use a full MIME builder (multipart, HTML) — MVP
-// ships plain text only.
+// ── Delivery via the Cloudflare Email Service binding ───────────────
+// Uses the modern structured send() API. See workers/email-sender.ts
+// for the canonical helper.
 
 interface DeliverInput {
 	from: string;
@@ -163,50 +118,22 @@ interface DeliverInput {
 }
 
 async function deliverViaBinding(env: Env, d: DeliverInput): Promise<boolean> {
-	const binding = (env as unknown as { EMAIL?: unknown }).EMAIL;
-	if (!binding) {
-		// No binding configured — dev mode. We consider this "logged, not sent".
+	if (!env.EMAIL) {
+		// Binding absent — treat as logged-only (local dev without miniflare
+		// email emulation, or a misconfigured deploy).
 		return false;
 	}
 
-	const mime = buildMime(d);
-
-	// The Workers EmailMessage type is not directly importable in type-safe
-	// fashion without cloudflare:email-message. We use a runtime-dynamic send.
-	// TypeScript-wise, we cast to a loose send() method.
-	const emailCtor = (globalThis as unknown as {
-		EmailMessage?: new (from: string, to: string, raw: string) => unknown;
-	}).EmailMessage;
-	if (!emailCtor) {
-		// Runtime doesn't expose EmailMessage — fall back to no-op for dev.
-		return false;
-	}
-
-	const msg = new emailCtor(d.from, d.to, mime);
-	await (binding as { send: (m: unknown) => Promise<void> }).send(msg);
+	await env.EMAIL.send({
+		to: d.to,
+		from: d.from,
+		subject: d.subject,
+		text: d.body,
+		cc: d.cc,
+		replyTo: d.replyTo,
+		headers: {
+			"Message-ID": d.messageId,
+		},
+	} as Parameters<SendEmail["send"]>[0]);
 	return true;
-}
-
-function buildMime(d: DeliverInput): string {
-	const date = new Date().toUTCString();
-	const headers = [
-		`From: ${d.from}`,
-		`To: ${d.to}`,
-		d.cc ? `Cc: ${d.cc}` : null,
-		`Subject: ${escapeHeader(d.subject)}`,
-		`Date: ${date}`,
-		`Message-ID: ${d.messageId}`,
-		`Reply-To: ${d.replyTo}`,
-		`MIME-Version: 1.0`,
-		`Content-Type: text/plain; charset="utf-8"`,
-		`Content-Transfer-Encoding: 7bit`,
-	]
-		.filter(Boolean)
-		.join("\r\n");
-	return `${headers}\r\n\r\n${d.body}`;
-}
-
-function escapeHeader(s: string): string {
-	// Very minimal — real code should encode non-ASCII via =?utf-8?b?...?=
-	return s.replace(/\r?\n/g, " ");
 }
