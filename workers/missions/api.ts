@@ -8,6 +8,10 @@ import { DEFAULT_USER_ID, agentDoKey } from "./index";
 import type { AgentRole } from "./db/agent-schema";
 import { ensureBootstrapped } from "./services/bootstrap";
 import {
+	handleInboundWebhook,
+	type InboundWebhookPayload,
+} from "./services/email-in";
+import {
 	listContacts,
 	suppressContact,
 	setContactOutcome,
@@ -28,6 +32,24 @@ function agentStub(env: Env, role: AgentRole) {
 	const id = agentDoKey(DEFAULT_USER_ID, role);
 	return { stub: env.AGENT_DO.get(env.AGENT_DO.idFromName(id)), id };
 }
+
+// ── Inbound webhook ─────────────────────────────────────────────────
+// Provider-agnostic entry point for inbound replies. Any inbound-email
+// provider (Postmark, CloudMailin, Mailgun, etc.) can be configured to
+// POST here — map their payload fields to { from, to, subject, text } in
+// their dashboard. The route expects a shared secret in the
+// X-Inbound-Secret header matching env.HMAC_SECRET so randos can't forge
+// replies. The reply+TOKEN@ pattern still has to verify separately.
+
+missionsApp.post("/inbound", async (c) => {
+	const secret = c.req.header("x-inbound-secret");
+	if (!secret || secret !== c.env.HMAC_SECRET) {
+		return c.json({ error: "unauthorized" }, 401);
+	}
+	const payload = (await c.req.json()) as InboundWebhookPayload;
+	const result = await handleInboundWebhook(c.env, payload);
+	return c.json(result);
+});
 
 // ── Bootstrap ────────────────────────────────────────────────────────
 

@@ -11,6 +11,55 @@ import PostalMime from "postal-mime";
 import type { Env } from "../../types";
 import { verifyReplyToken, extractReplyToken } from "./hmac";
 
+// ── Generic inbound webhook payload ─────────────────────────────────
+// Shape accepted by the POST /api/v1/missions/inbound route. Compatible
+// with common inbound-email providers (Postmark, CloudMailin, Mailgun,
+// custom Resend-inbound integrations) once you map their payload to this
+// minimal shape in the provider's webhook config.
+
+export interface InboundWebhookPayload {
+	from: string; // sender email
+	to: string; // recipient email (must be reply+TOKEN@yourdomain)
+	subject?: string | null;
+	text?: string; // plaintext body (preferred)
+	html?: string; // HTML fallback — stripped if text is empty
+	cc?: string | null;
+	messageId?: string | null;
+	inReplyTo?: string | null;
+}
+
+export async function handleInboundWebhook(
+	env: Env,
+	payload: InboundWebhookPayload,
+): Promise<{ ok: boolean; routed: boolean; reason?: string }> {
+	const to = (payload.to ?? "").toLowerCase();
+	const token = extractReplyToken(to);
+	if (!token) return { ok: true, routed: false, reason: "no reply token in to-address" };
+
+	const route = await verifyReplyToken(env, token);
+	if (!route) return { ok: true, routed: false, reason: "invalid hmac" };
+
+	const body =
+		payload.text ??
+		(payload.html ? stripHtml(payload.html) : "");
+
+	const stub = env.MISSION_DO.get(env.MISSION_DO.idFromName(route.missionId));
+	await stub.onInboundMessage({
+		threadId: route.threadId,
+		message: {
+			from_addr: (payload.from ?? "").toLowerCase(),
+			to_addr: to,
+			cc: payload.cc ?? null,
+			subject: payload.subject ?? null,
+			body,
+			sent_at: new Date().toISOString(),
+			message_id: payload.messageId ?? null,
+			in_reply_to: payload.inReplyTo ?? null,
+		},
+	});
+	return { ok: true, routed: true };
+}
+
 export interface InboundRoute {
 	missionId: string;
 	threadId: string;
