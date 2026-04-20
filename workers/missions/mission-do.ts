@@ -327,6 +327,15 @@ export class MissionDO extends DurableObject<Env> {
 		});
 	}
 
+	async getApproval(id: string): Promise<ApprovalRow | null> {
+		const rows = await this.db
+			.select()
+			.from(schema.approvals)
+			.where(eq(schema.approvals.id, id))
+			.limit(1);
+		return (rows[0] as ApprovalRow | undefined) ?? null;
+	}
+
 	async listPendingApprovals(missionId: string): Promise<ApprovalRow[]> {
 		const rows = await this.db
 			.select()
@@ -391,5 +400,118 @@ export class MissionDO extends DurableObject<Env> {
 			.orderBy(desc(schema.activity_events.timestamp))
 			.limit(limit);
 		return rows as ActivityEventRow[];
+	}
+
+	// ── Scheduling (durable alarms) ─────────────────────────────────
+
+	async scheduleTask(input: {
+		missionId: string;
+		kind: schema.ScheduledTaskKind;
+		fireAt: Date;
+		payload?: unknown;
+	}): Promise<string> {
+		const id = uuid();
+		await this.db.insert(schema.scheduled_tasks).values({
+			id,
+			mission_id: input.missionId,
+			kind: input.kind,
+			fire_at: input.fireAt.toISOString(),
+			payload: input.payload ? JSON.stringify(input.payload) : null,
+			status: "pending",
+			created_at: nowIso(),
+			fired_at: null,
+		});
+		await this.syncAlarm();
+		return id;
+	}
+
+	async cancelTask(id: string): Promise<void> {
+		await this.db
+			.update(schema.scheduled_tasks)
+			.set({ status: "cancelled", fired_at: nowIso() })
+			.where(eq(schema.scheduled_tasks.id, id));
+		await this.syncAlarm();
+	}
+
+	private async syncAlarm(): Promise<void> {
+		const rows = (await this.db
+			.select()
+			.from(schema.scheduled_tasks)
+			.where(eq(schema.scheduled_tasks.status, "pending"))
+			.orderBy(schema.scheduled_tasks.fire_at)
+			.limit(1)) as Array<{ fire_at: string }>;
+		const next = rows[0];
+		if (!next) {
+			await this.ctx.storage.deleteAlarm();
+			return;
+		}
+		await this.ctx.storage.setAlarm(new Date(next.fire_at).getTime());
+	}
+
+	async alarm(): Promise<void> {
+		const now = new Date();
+		const due = (await this.db
+			.select()
+			.from(schema.scheduled_tasks)
+			.where(eq(schema.scheduled_tasks.status, "pending"))
+			.orderBy(schema.scheduled_tasks.fire_at)) as Array<{
+			id: string;
+			mission_id: string;
+			kind: schema.ScheduledTaskKind;
+			fire_at: string;
+			payload: string | null;
+		}>;
+
+		const ready = due.filter((r) => new Date(r.fire_at) <= now);
+
+		// Dynamic import to avoid the circular dep between DO class and workflow.
+		const { dispatchScheduled } = await import("./workflows/mission-workflow");
+
+		for (const task of ready) {
+			try {
+				await dispatchScheduled(this, this.env, {
+					taskId: task.id,
+					missionId: task.mission_id,
+					kind: task.kind,
+					payload: task.payload ? JSON.parse(task.payload) : null,
+				});
+			} catch (err) {
+				console.error(
+					`[mission-do] scheduled task ${task.kind} failed:`,
+					(err as Error).message,
+				);
+			}
+			await this.db
+				.update(schema.scheduled_tasks)
+				.set({ status: "done", fired_at: nowIso() })
+				.where(eq(schema.scheduled_tasks.id, task.id));
+		}
+
+		await this.syncAlarm();
+	}
+
+	// ── Workflow entry points (delegated to workflow module) ────────
+
+	async startMission(missionId: string): Promise<void> {
+		const { startMission } = await import("./workflows/mission-workflow");
+		await startMission(this, this.env, missionId);
+	}
+
+	async onInboundMessage(input: {
+		threadId: string;
+		message: Omit<MessageRow, "id" | "thread_id" | "direction">;
+	}): Promise<void> {
+		const { handleInbound } = await import("./workflows/mission-workflow");
+		await handleInbound(this, this.env, input.threadId, input.message);
+	}
+
+	async resolveApprovalFromUser(
+		approvalId: string,
+		resolution: unknown,
+	): Promise<void> {
+		const { handleApprovalResolution } = await import(
+			"./workflows/mission-workflow"
+		);
+		await handleApprovalResolution(this, this.env, approvalId, resolution);
 	}
 }

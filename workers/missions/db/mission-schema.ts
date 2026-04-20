@@ -147,3 +147,23 @@ export const activity_events = sqliteTable(
 	},
 	(t) => [index("idx_activity_mission").on(t.mission_id)],
 );
+
+export type ScheduledTaskKind =
+	| "silent_confirm_timeout"
+	| "followup_send"
+	| "handoff_reminder";
+
+export const scheduled_tasks = sqliteTable(
+	"scheduled_tasks",
+	{
+		id: text("id").primaryKey(),
+		mission_id: text("mission_id").notNull(),
+		kind: text("kind").notNull(),
+		fire_at: text("fire_at").notNull(),
+		payload: text("payload"),
+		status: text("status").notNull().default("pending"),
+		created_at: text("created_at").notNull(),
+		fired_at: text("fired_at"),
+	},
+	(t) => [index("idx_scheduled_status_fire").on(t.status, t.fire_at)],
+);

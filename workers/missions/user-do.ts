@@ -88,6 +88,31 @@ export class UserDO extends DurableObject<Env> {
 		});
 	}
 
+	async getUser(
+		userId: string,
+	): Promise<{
+		id: string;
+		email: string;
+		name: string | null;
+		domain: string;
+		created_at: string;
+	} | null> {
+		const rows = await this.db
+			.select()
+			.from(schema.users)
+			.where(eq(schema.users.id, userId))
+			.limit(1);
+		return (rows[0] as
+			| {
+					id: string;
+					email: string;
+					name: string | null;
+					domain: string;
+					created_at: string;
+			  }
+			| undefined) ?? null;
+	}
+
 	async getContactByEmail(
 		userId: string,
 		email: string,

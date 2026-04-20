@@ -94,4 +94,20 @@ export const missionMigrations: Migration[] = [
 			CREATE INDEX idx_activity_mission ON activity_events(mission_id);
 		`,
 	},
+	{
+		name: "2_scheduled_tasks",
+		sql: `
+			CREATE TABLE scheduled_tasks (
+				id TEXT PRIMARY KEY,
+				mission_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				fire_at TEXT NOT NULL,
+				payload TEXT,
+				status TEXT NOT NULL DEFAULT 'pending',
+				created_at TEXT NOT NULL,
+				fired_at TEXT
+			);
+			CREATE INDEX idx_scheduled_status_fire ON scheduled_tasks(status, fire_at);
+		`,
+	},
 ];
