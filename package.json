@@ -1,10 +1,10 @@
 {
-	"name": "agentic-inbox",
+	"name": "missions",
 	"private": true,
 	"license": "Apache-2.0",
 	"type": "module",
 	"cloudflare": {
-		"label": "Agentic Inbox",
+		"label": "Missions",
 		"products": ["Workers", "Durable Objects", "R2", "Workers AI"],
 		"bindings": {
 			"DOMAINS": {
