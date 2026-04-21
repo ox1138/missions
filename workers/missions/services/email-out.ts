@@ -96,6 +96,21 @@ function domainFromEmail(email: string): string {
 	return at >= 0 ? email.slice(at + 1) : "invalid";
 }
 
+// Minimal plaintext → HTML for deliverability. Escapes entities and wraps
+// paragraphs in <p>. Not pretty but enough to satisfy providers that
+// downrank text-only messages.
+function textToHtml(text: string): string {
+	const escaped = text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+	const paragraphs = escaped
+		.split(/\n{2,}/)
+		.map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`)
+		.join("\n");
+	return `<!doctype html><html><body>${paragraphs}</body></html>`;
+}
+
 async function buildReplyTo(env: Env, input: SendEmailInput): Promise<string> {
 	// HMAC-signed token encodes (mission_id, thread_id, target_id) so inbound
 	// replies route back to the right MissionDO regardless of the recipient.
@@ -137,6 +152,7 @@ async function deliverViaBinding(env: Env, d: DeliverInput): Promise<boolean> {
 		from: d.from,
 		subject: d.subject,
 		text: d.body,
+		html: textToHtml(d.body),
 		cc: d.cc,
 		replyTo: d.replyTo,
 	} as Parameters<SendEmail["send"]>[0];

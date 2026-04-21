@@ -33,6 +33,52 @@ function agentStub(env: Env, role: AgentRole) {
 	return { stub: env.AGENT_DO.get(env.AGENT_DO.idFromName(id)), id };
 }
 
+// ── Diagnostics: minimal direct-send test ───────────────────────────
+// Hits env.EMAIL.send() with the smallest possible payload to isolate
+// whether the CF Email Service binding is healthy for this account.
+// Bypasses the workflow, prompts, HMAC routing — just the raw binding.
+// Usage: curl -X POST https://<worker>/api/v1/missions/test-send \
+//         -H "Content-Type: application/json" \
+//         -d '{"to":"you@example.com","from":"otto@yourdomain.com"}'
+
+missionsApp.post("/test-send", async (c) => {
+	const body = (await c.req.json().catch(() => ({}))) as {
+		to?: string;
+		from?: string;
+	};
+	const to = body.to;
+	const from = body.from;
+	if (!to || !from) {
+		return c.json({ error: "to and from required" }, 400);
+	}
+	if (!c.env.EMAIL) {
+		return c.json({ error: "EMAIL binding not present" }, 500);
+	}
+	try {
+		const payload = {
+			to,
+			from,
+			subject: "Missions test send",
+			text: "This is a diagnostic test from the Missions worker.",
+			html: "<p>This is a diagnostic test from the Missions worker.</p>",
+		} as Parameters<SendEmail["send"]>[0];
+		const result = await c.env.EMAIL.send(payload);
+		return c.json({ ok: true, result });
+	} catch (err) {
+		const e = err as Error & { code?: string; details?: unknown };
+		return c.json(
+			{
+				ok: false,
+				message: e.message,
+				code: e.code,
+				details: e.details,
+				obj: JSON.parse(JSON.stringify(e)),
+			},
+			500,
+		);
+	}
+});
+
 // ── Inbound webhook ─────────────────────────────────────────────────
 // Provider-agnostic entry point for inbound replies. Any inbound-email
 // provider (Postmark, CloudMailin, Mailgun, etc.) can be configured to
