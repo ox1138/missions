@@ -9,7 +9,8 @@
 
 import PostalMime from "postal-mime";
 import type { Env } from "../../types";
-import { verifyReplyToken, extractReplyToken } from "./hmac";
+import { DEFAULT_USER_ID } from "../index";
+import { extractReplyToken } from "./hmac";
 
 // ── Generic inbound webhook payload ─────────────────────────────────
 // Shape accepted by the POST /api/v1/missions/inbound route. Compatible
@@ -36,8 +37,9 @@ export async function handleInboundWebhook(
 	const token = extractReplyToken(to);
 	if (!token) return { ok: true, routed: false, reason: "no reply token in to-address" };
 
-	const route = await verifyReplyToken(env, token);
-	if (!route) return { ok: true, routed: false, reason: "invalid hmac" };
+	const userStub = env.USER_DO.get(env.USER_DO.idFromName(DEFAULT_USER_ID));
+	const route = await userStub.resolveReplyToken(token);
+	if (!route) return { ok: true, routed: false, reason: "unknown token" };
 
 	const body =
 		payload.text ??
@@ -108,12 +110,13 @@ export async function tryHandleMissionsInbound(
 
 	if (!token) return false;
 
-	const route = await verifyReplyToken(env, token);
+	const userStub = env.USER_DO.get(env.USER_DO.idFromName(DEFAULT_USER_ID));
+	const route = await userStub.resolveReplyToken(token);
 	if (!route) {
 		console.warn(
-			`[missions/email-in] invalid/expired reply token for ${tokenRecipient}`,
+			`[missions/email-in] unknown reply token for ${tokenRecipient}`,
 		);
-		// TODO Phase 5: write to a quarantine table and still create/update
+		// TODO: write to a quarantine table and still create/update
 		// a Contact so the history isn't lost.
 		return true; // we claim this — invalid but clearly for missions.
 	}

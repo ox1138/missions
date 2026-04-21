@@ -44,4 +44,17 @@ export const userMigrations: Migration[] = [
 			CREATE INDEX idx_activity_mission ON contact_activity(mission_id);
 		`,
 	},
+	{
+		name: "2_reply_tokens",
+		sql: `
+			CREATE TABLE reply_tokens (
+				token TEXT PRIMARY KEY,
+				mission_id TEXT NOT NULL,
+				thread_id TEXT NOT NULL,
+				target_id TEXT,
+				created_at TEXT NOT NULL
+			);
+			CREATE INDEX idx_reply_tokens_mission ON reply_tokens(mission_id);
+		`,
+	},
 ];

@@ -9,7 +9,6 @@ import type { Env } from "../../types";
 import type { MissionDO } from "../mission-do";
 import { DEFAULT_USER_ID } from "../index";
 import { recordInteraction } from "./contact-ingest";
-import { signReplyToken } from "./hmac";
 
 export interface SendEmailInput {
 	missionId: string;
@@ -112,9 +111,11 @@ function textToHtml(text: string): string {
 }
 
 async function buildReplyTo(env: Env, input: SendEmailInput): Promise<string> {
-	// HMAC-signed token encodes (mission_id, thread_id, target_id) so inbound
-	// replies route back to the right MissionDO regardless of the recipient.
-	const token = await signReplyToken(env, {
+	// Short opaque token backed by a server-side lookup (reply_tokens on
+	// UserDO). Kept to 16 chars so the full local-part stays under RFC 5321's
+	// 64-octet limit — CF's Email Service silently 500s on longer ones.
+	const userStub = env.USER_DO.get(env.USER_DO.idFromName(DEFAULT_USER_ID));
+	const token = await userStub.createReplyToken({
 		missionId: input.missionId,
 		threadId: input.threadId,
 		targetId: input.targetId ?? null,

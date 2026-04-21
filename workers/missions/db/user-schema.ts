@@ -50,6 +50,17 @@ export type ContactActivityType =
 	| "noted"
 	| "outcome_set";
 
+// Short opaque tokens used in reply-to addresses (reply+<token>@domain).
+// Kept short to stay under RFC 5321's 64-octet local-part limit — CF's
+// Email Service validator rejects long local-parts silently with a 500.
+export const reply_tokens = sqliteTable("reply_tokens", {
+	token: text("token").primaryKey(),
+	mission_id: text("mission_id").notNull(),
+	thread_id: text("thread_id").notNull(),
+	target_id: text("target_id"),
+	created_at: text("created_at").notNull(),
+});
+
 export const contact_activity = sqliteTable(
 	"contact_activity",
 	{

@@ -57,6 +57,15 @@ function nowIso() {
 	return new Date().toISOString();
 }
 
+// 16 base64url chars ≈ 12 random bytes ≈ 96 bits of entropy. URL/email-safe.
+function randomToken(): string {
+	const bytes = new Uint8Array(12);
+	crypto.getRandomValues(bytes);
+	let binary = "";
+	for (const b of bytes) binary += String.fromCharCode(b);
+	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 export class UserDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
 	db: ReturnType<typeof drizzle>;
@@ -228,6 +237,52 @@ export class UserDO extends DurableObject<Env> {
 					eq(schema.contacts.email, email.toLowerCase()),
 				),
 			);
+	}
+
+	// ── Reply tokens ───────────────────────────────────────────────
+	// Short opaque keys used in the reply-to local part. We keep them
+	// short (16 chars → ~96 bits of entropy) so the full reply-to stays
+	// under the 64-octet RFC 5321 local-part limit. Guessability isn't a
+	// concern — even if an attacker lands on a valid token they only
+	// inject a message into that specific thread.
+
+	async createReplyToken(input: {
+		missionId: string;
+		threadId: string;
+		targetId?: string | null;
+	}): Promise<string> {
+		const token = randomToken();
+		await this.db.insert(schema.reply_tokens).values({
+			token,
+			mission_id: input.missionId,
+			thread_id: input.threadId,
+			target_id: input.targetId ?? null,
+			created_at: nowIso(),
+		});
+		return token;
+	}
+
+	async resolveReplyToken(
+		token: string,
+	): Promise<{
+		missionId: string;
+		threadId: string;
+		targetId: string | null;
+	} | null> {
+		const rows = await this.db
+			.select()
+			.from(schema.reply_tokens)
+			.where(eq(schema.reply_tokens.token, token))
+			.limit(1);
+		const row = rows[0] as
+			| { mission_id: string; thread_id: string; target_id: string | null }
+			| undefined;
+		if (!row) return null;
+		return {
+			missionId: row.mission_id,
+			threadId: row.thread_id,
+			targetId: row.target_id,
+		};
 	}
 
 	async listContacts(
