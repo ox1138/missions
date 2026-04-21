@@ -57,13 +57,16 @@ function nowIso() {
 	return new Date().toISOString();
 }
 
-// 16 base64url chars ≈ 12 random bytes ≈ 96 bits of entropy. URL/email-safe.
+// 24 lowercase hex chars = 12 random bytes = 96 bits of entropy. We use hex
+// (not base64url) because email addresses are case-insensitive at delivery
+// time — Gmail and most MTAs lowercase the local-part, so mixed-case
+// base64url tokens get mangled by the time they hit our inbound handler.
 function randomToken(): string {
 	const bytes = new Uint8Array(12);
 	crypto.getRandomValues(bytes);
-	let binary = "";
-	for (const b of bytes) binary += String.fromCharCode(b);
-	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	return Array.from(bytes)
+		.map((b) => b.toString(16).padStart(2, "0"))
+		.join("");
 }
 
 export class UserDO extends DurableObject<Env> {
@@ -269,10 +272,13 @@ export class UserDO extends DurableObject<Env> {
 		threadId: string;
 		targetId: string | null;
 	} | null> {
+		// Normalize case — inbound email local-parts are lowercased by most
+		// MTAs, and we store hex which is already lowercase.
+		const normalized = token.toLowerCase();
 		const rows = await this.db
 			.select()
 			.from(schema.reply_tokens)
-			.where(eq(schema.reply_tokens.token, token))
+			.where(eq(schema.reply_tokens.token, normalized))
 			.limit(1);
 		const row = rows[0] as
 			| { mission_id: string; thread_id: string; target_id: string | null }
