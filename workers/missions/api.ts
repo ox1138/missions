@@ -41,6 +41,31 @@ function agentStub(env: Env, role: AgentRole) {
 //         -H "Content-Type: application/json" \
 //         -d '{"to":"you@example.com","from":"otto@yourdomain.com"}'
 
+// Same diagnostic but routed through a MissionDO, so we exercise the DO
+// execution context that the workflow runs in. If this fails while
+// /test-send succeeds, the bug is DO-context specific.
+missionsApp.post("/test-send-from-do", async (c) => {
+	const body = (await c.req.json().catch(() => ({}))) as {
+		to?: string;
+		from?: string;
+		replyTo?: string;
+	};
+	if (!body.to || !body.from) {
+		return c.json({ error: "to and from required" }, 400);
+	}
+	const stub = c.env.MISSION_DO.get(
+		c.env.MISSION_DO.idFromName("diag-test-send"),
+	);
+	const result = await stub.testSendFromDO({
+		to: body.to,
+		from: body.from,
+		subject: "Missions DO test send",
+		text: "Diagnostic test sent from inside a MissionDO.",
+		replyTo: body.replyTo,
+	});
+	return c.json(result);
+});
+
 missionsApp.post("/test-send", async (c) => {
 	const body = (await c.req.json().catch(() => ({}))) as {
 		to?: string;

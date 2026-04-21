@@ -514,4 +514,41 @@ export class MissionDO extends DurableObject<Env> {
 		);
 		await handleApprovalResolution(this, this.env, approvalId, resolution);
 	}
+
+	// Diagnostic: send exact same minimal payload as /api/v1/missions/test-send
+	// but from inside the DO execution context, so we can isolate whether
+	// env.EMAIL.send() behaves differently here vs from a Hono handler.
+	async testSendFromDO(input: {
+		to: string;
+		from: string;
+		subject: string;
+		text: string;
+		replyTo?: string;
+	}): Promise<{ ok: boolean; error?: { message: string; code?: string; obj?: unknown } }> {
+		if (!this.env.EMAIL) return { ok: false, error: { message: "no binding" } };
+		const payload: Record<string, unknown> = {
+			to: input.to,
+			from: input.from,
+			subject: input.subject,
+			text: input.text,
+			html: `<p>${input.text.replace(/</g, "&lt;")}</p>`,
+		};
+		if (input.replyTo) payload.replyTo = input.replyTo;
+		try {
+			await this.env.EMAIL.send(
+				payload as Parameters<SendEmail["send"]>[0],
+			);
+			return { ok: true };
+		} catch (err) {
+			const e = err as Error & { code?: string };
+			return {
+				ok: false,
+				error: {
+					message: e.message,
+					code: e.code,
+					obj: JSON.parse(JSON.stringify(e)),
+				},
+			};
+		}
+	}
 }
