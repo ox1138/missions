@@ -871,7 +871,7 @@ export async function handleApprovalResolution(
 			await mdo.addTarget({
 				missionId: approval.mission_id,
 				email: referral.email,
-				name: referral.name ?? null,
+				name: referral.name ?? undefined,
 				context: {
 					rationale: referral.context,
 					source: "referral",
