@@ -45,6 +45,9 @@ missionsApp.post("/test-send", async (c) => {
 	const body = (await c.req.json().catch(() => ({}))) as {
 		to?: string;
 		from?: string;
+		replyTo?: string;
+		subject?: string;
+		text?: string;
 	};
 	const to = body.to;
 	const from = body.from;
@@ -55,15 +58,19 @@ missionsApp.post("/test-send", async (c) => {
 		return c.json({ error: "EMAIL binding not present" }, 500);
 	}
 	try {
-		const payload = {
+		const text = body.text ?? "This is a diagnostic test from the Missions worker.";
+		const payload: Record<string, unknown> = {
 			to,
 			from,
-			subject: "Missions test send",
-			text: "This is a diagnostic test from the Missions worker.",
-			html: "<p>This is a diagnostic test from the Missions worker.</p>",
-		} as Parameters<SendEmail["send"]>[0];
-		const result = await c.env.EMAIL.send(payload);
-		return c.json({ ok: true, result });
+			subject: body.subject ?? "Missions test send",
+			text,
+			html: `<p>${text.replace(/</g, "&lt;")}</p>`,
+		};
+		if (body.replyTo) payload.replyTo = body.replyTo;
+		const result = await c.env.EMAIL.send(
+			payload as Parameters<SendEmail["send"]>[0],
+		);
+		return c.json({ ok: true, result, sent: payload });
 	} catch (err) {
 		const e = err as Error & { code?: string; details?: unknown };
 		return c.json(
