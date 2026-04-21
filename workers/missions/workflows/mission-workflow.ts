@@ -260,6 +260,21 @@ async function advanceToOutreach(
 	const targets = await mdo.listTargets(missionId);
 	const pending = targets.filter((t) => t.status === "pending");
 
+	if (pending.length === 0) {
+		const skippedCount = targets.filter(
+			(t) => t.status === "skipped_prior_history",
+		).length;
+		await mdo.logActivity({
+			missionId,
+			type: "outreach.nothing_to_send",
+			description:
+				targets.length === 0
+					? "Research found no candidates. Advancing to monitoring with no outreach."
+					: `All ${targets.length} candidate(s) were filtered out during research (${skippedCount} skipped on prior history, rest pending approval). No first-touch emails to send.`,
+			metadata: { total_targets: targets.length, skipped: skippedCount },
+		});
+	}
+
 	for (const t of pending) {
 		const history = await getContactHistory(env, t.email);
 		const historySummary = summarizeContactHistory(history);
