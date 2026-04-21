@@ -97,18 +97,18 @@ function domainFromEmail(email: string): string {
 }
 
 // Minimal plaintext → HTML for deliverability. Escapes entities and wraps
-// paragraphs in <p>. Not pretty but enough to satisfy providers that
-// downrank text-only messages.
+// paragraphs in <p>. No doctype/html/body wrapper — some CF validators
+// reject full HTML documents; inline paragraphs match what the working
+// test-send path used.
 function textToHtml(text: string): string {
 	const escaped = text
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;");
-	const paragraphs = escaped
+	return escaped
 		.split(/\n{2,}/)
 		.map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`)
-		.join("\n");
-	return `<!doctype html><html><body>${paragraphs}</body></html>`;
+		.join("");
 }
 
 async function buildReplyTo(env: Env, input: SendEmailInput): Promise<string> {
