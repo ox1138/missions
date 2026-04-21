@@ -27,6 +27,7 @@ export interface SendEmailResult {
 	messageId: string;
 	replyTo: string;
 	delivered: boolean;
+	error?: string; // populated when delivered=false to explain why
 }
 
 export async function sendEmail(
@@ -65,6 +66,7 @@ export async function sendEmail(
 
 	// Delivery via the Cloudflare Email Service binding.
 	let delivered = false;
+	let error: string | undefined;
 	try {
 		delivered = await deliverViaBinding(env, {
 			from: input.from,
@@ -75,15 +77,18 @@ export async function sendEmail(
 			messageId,
 			replyTo,
 		});
+		if (!delivered) error = "EMAIL binding not present on env";
 	} catch (err) {
+		const message = (err as Error).message ?? String(err);
 		console.warn(
 			`[email-out] delivery failed for ${input.to}:`,
-			(err as Error).message,
+			message,
 		);
 		delivered = false;
+		error = message;
 	}
 
-	return { messageId, replyTo, delivered };
+	return { messageId, replyTo, delivered, error };
 }
 
 function domainFromEmail(email: string): string {

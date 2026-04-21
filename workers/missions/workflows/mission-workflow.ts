@@ -316,11 +316,12 @@ async function advanceToOutreach(
 			type: sendResult.delivered ? "email.sent" : "email.drafted",
 			description: sendResult.delivered
 				? `Sent first-touch email to ${t.email}: "${draft.subject}"`
-				: `Drafted (not delivered — no Email Service bound) to ${t.email}: "${draft.subject}"`,
+				: `Drafted (delivery failed) to ${t.email}: "${draft.subject}" — ${sendResult.error ?? "unknown reason"}`,
 			metadata: {
 				thread_id: thread.id,
 				subject: draft.subject,
 				delivered: sendResult.delivered,
+				error: sendResult.error,
 			},
 		});
 	}
