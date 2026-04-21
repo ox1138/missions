@@ -4,7 +4,7 @@
 
 import { routeAgentRequest } from "agents";
 import { Hono } from "hono";
-import { jwtVerify, createRemoteJWKSet } from "jose";
+import { jwtVerify, createRemoteJWKSet, decodeJwt } from "jose";
 import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
@@ -79,11 +79,26 @@ app.use("*", async (c, next) => {
 		});
 	} catch (err) {
 		const message = (err as Error).message ?? String(err);
+		// Decode the JWT without verifying so we can show what claims it
+		// actually has — the jose error alone doesn't tell you which value
+		// was unexpected. Catch any decode error too (malformed token).
+		let actualClaims: { iss?: string; aud?: unknown; exp?: number } = {};
+		try {
+			actualClaims = decodeJwt(token) as typeof actualClaims;
+		} catch { /* malformed */ }
+		const expected = {
+			iss: new URL(TEAM_DOMAIN).origin,
+			aud: POLICY_AUD,
+		};
 		console.warn(
-			`[access] JWT verify failed: ${message} | issuer=${TEAM_DOMAIN} aud=${POLICY_AUD.slice(0, 8)}…`,
+			`[access] JWT verify failed: ${message} | expected iss=${expected.iss} aud=${expected.aud.slice(0, 8)}… | actual iss=${actualClaims.iss} aud=${JSON.stringify(actualClaims.aud)}`,
 		);
 		return c.text(
-			`Invalid or expired Access token: ${message}`,
+			`Invalid or expired Access token: ${message}\n` +
+				`expected iss=${expected.iss}\n` +
+				`actual iss=${actualClaims.iss}\n` +
+				`expected aud=${expected.aud.slice(0, 8)}…\n` +
+				`actual aud=${JSON.stringify(actualClaims.aud)}`,
 			403,
 		);
 	}
