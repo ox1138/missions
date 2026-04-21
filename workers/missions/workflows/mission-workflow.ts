@@ -179,6 +179,17 @@ async function advanceToResearch(
 			source_url: null,
 			related_contact_id: history?.contact.id ?? null,
 		});
+		await mdo.logActivity({
+			missionId,
+			type: "research.target_triaged",
+			description: `${c.email} → ${enrich.action}: ${enrich.reasoning}`,
+			metadata: {
+				email: c.email,
+				action: enrich.action,
+				recommendation,
+				has_history: !!history,
+			},
+		});
 
 		if (
 			enrich.action === "skip_declined" ||
