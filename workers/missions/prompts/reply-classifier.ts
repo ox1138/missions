@@ -49,6 +49,14 @@ export interface ReplyClassifierResult {
 	freeform_prompt?: string;
 	// Short one-liner for the activity stream.
 	rationale: string;
+	// If the reply redirects to someone else ("contact X instead") — each
+	// referral surfaces as a separate multi-choice approval asking the user
+	// whether to add that person as a new target on this mission.
+	referrals?: Array<{
+		email: string;
+		name?: string;
+		context: string; // why they were referred, short
+	}>;
 }
 
 const SYSTEM = `You are the reply-triage head for an email agent. Read an inbound message and decide how the agent should respond.
@@ -70,6 +78,9 @@ Actions:
 
 BIAS: prefer auto_reply or auto_close. A short neutral reply the agent can send confidently almost always beats pinging the user. Only escalate when the agent genuinely cannot proceed.
 
+ORTHOGONAL CONCERN — REFERRALS:
+If the reply points the agent toward someone else ("contact X instead", "you should talk to Y", "Z handles that"), also populate a "referrals" array with each person mentioned. Include their email if they gave one, their name if mentioned, and a short context line describing why they were suggested. Populate referrals INDEPENDENTLY of the action — the referral handoff is a separate decision the user will make. If the reply contains no referral, omit the field or return an empty array.
+
 Output ONE JSON object. Include draft_reply / multi_choice / freeform_prompt ONLY for their respective actions.
 
 {
@@ -78,7 +89,8 @@ Output ONE JSON object. Include draft_reply / multi_choice / freeform_prompt ONL
   "draft_reply": { "subject": "...", "body": "..." },  // only if auto_reply*
   "multi_choice": { "prompt": "...", "options": [{ "id": "a", "label": "...", "suggested_reply": "..." }] },
   "freeform_prompt": "What the agent would ask the user",
-  "rationale": "one-liner for the activity stream"
+  "rationale": "one-liner for the activity stream",
+  "referrals": [{ "email": "...", "name": "...", "context": "..." }]  // optional
 }`;
 
 function formatMemory(memory: AgentMemory | null): string {

@@ -466,6 +466,40 @@ export async function handleInbound(
 	});
 
 	await applyReplyAction(mdo, env, thread, mission, agent, result);
+
+	// Referrals are orthogonal to the thread-level action — if the reply
+	// pointed to another person, surface each one as its own approval so
+	// the user can choose to add them as a new mission target.
+	if (result.referrals && result.referrals.length > 0) {
+		for (const ref of result.referrals) {
+			if (!ref.email) continue;
+			if (await isSuppressed(env, ref.email)) continue;
+			await mdo.createApproval({
+				mission_id: thread.mission_id,
+				thread_id: thread.id,
+				type: "multi_choice",
+				prompt: `${ref.name ? `${ref.name} (${ref.email})` : ref.email} was suggested: ${ref.context}. Add them as a new target?`,
+				context: JSON.stringify({
+					phase: "referral",
+					source_thread_id: thread.id,
+					referral: ref,
+				}),
+				options: JSON.stringify([
+					{ id: "add", label: "Add and email them", suggested_reply: "" },
+					{ id: "skip", label: "Skip", suggested_reply: "" },
+				]),
+				proposed_action: null,
+				timeout_at: null,
+				default_behavior: "hold",
+			});
+			await mdo.logActivity({
+				missionId: thread.mission_id,
+				type: "referral.detected",
+				description: `${ref.email} suggested by reply: ${ref.context}`,
+				metadata: { thread_id: thread.id, referral: ref },
+			});
+		}
+	}
 }
 
 async function applyReplyAction(
@@ -821,6 +855,41 @@ export async function handleApprovalResolution(
 			description: `Sent "${opt.label}" reply.`,
 			metadata: { thread_id: thread.id, option_id: opt.id },
 		});
+		await resolved();
+		return;
+	}
+
+	// ── multi_choice on referral: add the suggested person as a new target ─
+	if (approval.type === "multi_choice" && phase === "referral") {
+		const chosen = (resolution as { option_id?: string })?.option_id;
+		const referral = ctx.referral as {
+			email: string;
+			name?: string;
+			context: string;
+		};
+		if (chosen === "add" && referral?.email) {
+			await mdo.addTarget({
+				missionId: approval.mission_id,
+				email: referral.email,
+				name: referral.name ?? null,
+				context: {
+					rationale: referral.context,
+					source: "referral",
+					source_thread_id: ctx.source_thread_id,
+				},
+				status: "pending",
+			});
+			await mdo.logActivity({
+				missionId: approval.mission_id,
+				type: "target.added_from_referral",
+				description: `Added ${referral.email} as a new target via referral.`,
+				metadata: { email: referral.email },
+			});
+			await resolved();
+			// Run outreach — the loop will only pick up the new pending target.
+			await advanceToOutreach(mdo, env, approval.mission_id);
+			return;
+		}
 		await resolved();
 		return;
 	}
