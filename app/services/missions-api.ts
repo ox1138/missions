@@ -187,6 +187,7 @@ export const missionsApi = {
 		brief: string;
 		agent_role: AgentRole;
 		preseeded_targets?: { name: string; email: string; context: string }[];
+		force_outreach?: boolean;
 	}) =>
 		request<{ mission_id: string }>("/missions", {
 			method: "POST",

@@ -115,18 +115,20 @@ missionsApp.post("/missions", async (c) => {
 		brief: string;
 		agent_role: AgentRole;
 		preseeded_targets?: { name: string; email: string; context: string }[];
+		force_outreach?: boolean;
 	}>();
 	const missionId = crypto.randomUUID();
 	const agentId = agentDoKey(DEFAULT_USER_ID, body.agent_role);
 	const stub = missionStub(c.env, missionId);
+	const opts: Record<string, unknown> = {};
+	if (body.preseeded_targets) opts.preseeded = body.preseeded_targets;
+	if (body.force_outreach) opts.force_outreach = true;
 	await stub.createMission({
 		id: missionId,
 		userId: DEFAULT_USER_ID,
 		agentId,
 		brief: body.brief,
-		completionCondition: body.preseeded_targets
-			? { preseeded: body.preseeded_targets }
-			: undefined,
+		completionCondition: Object.keys(opts).length ? opts : undefined,
 	});
 
 	// Kick off the workflow in the background.

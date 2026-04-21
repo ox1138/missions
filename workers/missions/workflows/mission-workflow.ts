@@ -125,11 +125,19 @@ async function advanceToResearch(
 	await mdo.setPhase(missionId, "research");
 	const mission = (await mdo.getMission(missionId))!;
 	const agentRole = agentRoleFromId(mission.agent_id);
+	const options = mission.completion_condition
+		? (JSON.parse(mission.completion_condition) as {
+				preseeded?: Array<{ name: string; email: string; context: string }>;
+				force_outreach?: boolean;
+			})
+		: {};
+	const forceOutreach = options.force_outreach === true;
 
 	const research = await runResearch(env, {
 		missionBrief: mission.brief,
 		agentRole,
 		targetCount,
+		preseeded: options.preseeded,
 	});
 
 	await mdo.addResearchLog({
@@ -160,6 +168,30 @@ async function advanceToResearch(
 		}
 
 		const history = await getContactHistory(env, c.email);
+
+		// Force mode: user explicitly asked to bypass the prior-history triage.
+		// Suppression still holds; active threads still block via runtime
+		// checks in outreach drafting. This is the escape hatch when the LLM
+		// is being too conservative (e.g. small test loops where every target
+		// has recent history).
+		if (forceOutreach) {
+			await mdo.addTarget({
+				missionId,
+				email: c.email,
+				name: c.name,
+				context: { rationale: c.context, forced: true },
+				status: "pending",
+				contactId: history?.contact.id ?? undefined,
+			});
+			await mdo.logActivity({
+				missionId,
+				type: "research.target_forced",
+				description: `${c.email} → forced outreach (triage bypassed by user).`,
+				metadata: { email: c.email },
+			});
+			continue;
+		}
+
 		const recommendation = recommendContactBehavior(history);
 		const historySummary = summarizeContactHistory(history);
 

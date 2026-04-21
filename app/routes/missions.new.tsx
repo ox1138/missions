@@ -15,6 +15,7 @@ export default function MissionsNew() {
 	const navigate = useNavigate();
 	const [brief, setBrief] = useState("");
 	const [agentRole, setAgentRole] = useState<AgentRole>("otto");
+	const [forceOutreach, setForceOutreach] = useState(false);
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
@@ -26,6 +27,7 @@ export default function MissionsNew() {
 			const { mission_id } = await missionsApi.createMission({
 				brief: brief.trim(),
 				agent_role: agentRole,
+				force_outreach: forceOutreach,
 			});
 			rememberMissionId(mission_id);
 			navigate(`/missions/${mission_id}`);
@@ -76,6 +78,24 @@ export default function MissionsNew() {
 							))}
 						</div>
 					</div>
+
+					<label className="flex items-start gap-2 rounded-md border border-kumo-subtle bg-kumo-base p-3 cursor-pointer">
+						<input
+							type="checkbox"
+							checked={forceOutreach}
+							onChange={(e) => setForceOutreach(e.target.checked)}
+							className="mt-0.5"
+						/>
+						<span className="text-sm text-kumo-default">
+							<span className="font-medium">Force send, ignore prior history.</span>
+							<span className="block text-xs text-kumo-muted mt-0.5">
+								Skips the per-target triage LLM that normally filters candidates with
+								recent threads or prior outcomes. Suppressed contacts still won't be
+								emailed. Useful for testing or when you know the context better than
+								the agent.
+							</span>
+						</span>
+					</label>
 
 					{error && (
 						<div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
