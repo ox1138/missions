@@ -178,6 +178,24 @@ async function deliverViaBinding(env: Env, d: DeliverInput): Promise<boolean> {
 			const isLast = i === attempts - 1;
 			const canRetry = typeof e.code === "string" && retryable.has(e.code);
 			if (!canRetry || isLast) {
+				// Dump the payload shape (not full content — just what's
+				// structurally different from the working test-send).
+				const shape = {
+					to: payload.to,
+					from: payload.from,
+					subject: String(payload.subject ?? "").slice(0, 80),
+					subject_len: String(payload.subject ?? "").length,
+					text_len: String(payload.text ?? "").length,
+					text_preview: String(payload.text ?? "").slice(0, 200),
+					html_len: String(payload.html ?? "").length,
+					has_cc: "cc" in payload,
+					has_replyTo: "replyTo" in payload,
+					replyTo: payload.replyTo,
+					replyTo_len: String(payload.replyTo ?? "").length,
+				};
+				console.warn(
+					`[email-out] send failed. payload=${JSON.stringify(shape)} err=${e.message} code=${e.code}`,
+				);
 				const parts = [e.message || "send failed"];
 				if (e.code) parts.push(`code=${e.code}`);
 				if (e.details) parts.push(`details=${JSON.stringify(e.details)}`);
@@ -185,6 +203,7 @@ async function deliverViaBinding(env: Env, d: DeliverInput): Promise<boolean> {
 					const obj = JSON.parse(JSON.stringify(e));
 					if (Object.keys(obj).length) parts.push(`obj=${JSON.stringify(obj)}`);
 				} catch { /* non-serializable */ }
+				parts.push(`payload_shape=${JSON.stringify(shape)}`);
 				if (canRetry) parts.push(`(after ${attempts} attempts)`);
 				throw new Error(parts.join(" | "));
 			}
