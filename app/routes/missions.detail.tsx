@@ -1,24 +1,30 @@
-// Mission workspace — header, activity stream (left), threads column (right),
-// pending approvals strip above the activity stream. Polls every 3s for live
-// updates. (WebSocket upgrade deferred; see PRD § observability.)
+// Mission workspace — editable brief + stats header, email timeline as the
+// main column, activity sidebar as the narrow "what has the agent learnt"
+// rail. Polls every 3s for live updates.
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate, Link } from "react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { MissionsNav } from "~/components/MissionsNav";
 import {
 	missionsApi,
 	type Approval,
-	type Thread,
 	type ActivityEvent,
 	type Message,
+	type TimelineMessage,
 } from "~/services/missions-api";
+import { labelForEvent, phaseLabel } from "~/lib/activity-labels";
 
 export default function MissionDetail() {
 	const { id } = useParams();
 	const navigate = useNavigate();
 	const qc = useQueryClient();
 	const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+	const [expandedMessageId, setExpandedMessageId] = useState<string | null>(
+		null,
+	);
+	const [editingBrief, setEditingBrief] = useState(false);
+	const [briefDraft, setBriefDraft] = useState("");
 
 	const missionQ = useQuery({
 		queryKey: ["mission", id],
@@ -32,10 +38,33 @@ export default function MissionDetail() {
 		enabled: !!id,
 		refetchInterval: 3000,
 	});
+	const messagesQ = useQuery({
+		queryKey: ["messages", id],
+		queryFn: () => missionsApi.getMissionMessages(id!),
+		enabled: !!id,
+		refetchInterval: 3000,
+	});
 
 	const cancel = useMutation({
 		mutationFn: () => missionsApi.cancelMission(id!),
 		onSuccess: () => qc.invalidateQueries({ queryKey: ["mission", id] }),
+	});
+
+	const remove = useMutation({
+		mutationFn: () => missionsApi.deleteMission(id!),
+		onSuccess: () => {
+			dropStoredMissionId(id!);
+			navigate("/");
+		},
+	});
+
+	const saveBrief = useMutation({
+		mutationFn: (brief: string) => missionsApi.updateMissionBrief(id!, brief),
+		onSuccess: () => {
+			qc.invalidateQueries({ queryKey: ["mission", id] });
+			qc.invalidateQueries({ queryKey: ["activity", id] });
+			setEditingBrief(false);
+		},
 	});
 
 	if (!id || missionQ.isLoading) {
@@ -64,30 +93,129 @@ export default function MissionDetail() {
 
 	const { mission, threads, pending_approvals } = missionQ.data;
 	const events = activityQ.data?.events ?? [];
+	const messages = messagesQ.data?.messages ?? [];
 	const agentRole = mission.agent_id.split(":")[1] ?? "otto";
+
+	const emailsSent = messages.filter((m) => m.direction === "out").length;
+	const repliesReceived = messages.filter((m) => m.direction === "in").length;
+	const latestInbound = messages
+		.filter((m) => m.direction === "in")
+		.reduce<TimelineMessage | null>(
+			(acc, m) => (!acc || m.sent_at > acc.sent_at ? m : acc),
+			null,
+		);
+	const answered = !!mission.answer_summary;
+	const phasePillLabel = answered ? "Answered" : phaseLabel(mission.phase);
 
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
 			<MissionsNav />
 			<main className="mx-auto max-w-6xl px-6 py-6">
+				{answered && (
+					<AnswerCard
+						summary={mission.answer_summary!}
+						fromLabel={
+							latestInbound?.target_name ||
+							latestInbound?.from_addr ||
+							null
+						}
+						answeredAt={mission.answered_at}
+					/>
+				)}
 				<header className="mb-4 flex items-start justify-between gap-4">
 					<div className="min-w-0 flex-1">
-						<div className="flex items-center gap-2 text-xs mb-1">
+						<div className="flex items-center gap-2 text-xs mb-2">
 							<span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-700">
 								{agentRole}
 							</span>
-							<span className="text-kumo-muted">{mission.phase}</span>
+							<span
+								className={`rounded-full px-2 py-0.5 ${
+									answered
+										? "bg-emerald-100 text-emerald-700"
+										: "border border-kumo-subtle text-kumo-muted"
+								}`}
+							>
+								{phasePillLabel}
+							</span>
 						</div>
-						<p className="font-serif text-lg text-kumo-default leading-snug">
-							{mission.brief}
-						</p>
+						{editingBrief ? (
+							<div className="space-y-2">
+								<textarea
+									value={briefDraft}
+									onChange={(e) => setBriefDraft(e.target.value)}
+									rows={3}
+									autoFocus
+									className="w-full rounded-md border border-kumo-subtle bg-kumo-base px-3 py-2 font-serif text-lg text-kumo-default leading-snug focus:border-amber-400 focus:outline-none"
+								/>
+								<div className="flex items-center gap-2">
+									<button
+										onClick={() => saveBrief.mutate(briefDraft)}
+										disabled={
+											!briefDraft.trim() ||
+											briefDraft.trim() === mission.brief ||
+											saveBrief.isPending
+										}
+										className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+									>
+										Save
+									</button>
+									<button
+										onClick={() => setEditingBrief(false)}
+										className="rounded-md border border-kumo-subtle px-3 py-1.5 text-xs text-kumo-muted hover:text-kumo-strong"
+									>
+										Cancel
+									</button>
+								</div>
+							</div>
+						) : (
+							<div className="group flex items-start gap-2">
+								<p className="font-serif text-lg text-kumo-default leading-snug flex-1">
+									{mission.brief}
+								</p>
+								<button
+									onClick={() => {
+										setBriefDraft(mission.brief);
+										setEditingBrief(true);
+									}}
+									className="mt-1 shrink-0 text-xs text-kumo-muted opacity-0 hover:text-amber-600 group-hover:opacity-100 transition-opacity"
+									aria-label="Edit mission"
+								>
+									Edit
+								</button>
+							</div>
+						)}
+						<div className="mt-2 flex items-center gap-3 text-xs text-kumo-muted">
+							<span>{emailsSent} sent</span>
+							<span>·</span>
+							<span>{repliesReceived} repl{repliesReceived === 1 ? "y" : "ies"}</span>
+							<span>·</span>
+							<span>{threads.length} thread{threads.length === 1 ? "" : "s"}</span>
+							<span>·</span>
+							<span>started {formatRelative(mission.created_at)}</span>
+						</div>
 					</div>
 					<div className="flex items-center gap-2">
+						{mission.phase !== "complete" && mission.phase !== "cancelled" && (
+							<button
+								onClick={() => cancel.mutate()}
+								className="rounded-md border border-kumo-subtle px-3 py-1.5 text-xs text-kumo-muted hover:text-kumo-strong"
+							>
+								Cancel mission
+							</button>
+						)}
 						<button
-							onClick={() => cancel.mutate()}
-							className="rounded-md border border-kumo-subtle px-3 py-1.5 text-xs text-kumo-muted hover:text-kumo-strong"
+							onClick={() => {
+								if (
+									confirm(
+										"Delete this mission permanently? Threads and activity will be removed.",
+									)
+								) {
+									remove.mutate();
+								}
+							}}
+							className="rounded-md border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50"
 						>
-							Cancel mission
+							Delete
 						</button>
 						<button
 							onClick={() => navigate("/")}
@@ -105,22 +233,25 @@ export default function MissionDetail() {
 					/>
 				)}
 
-				<div className="grid grid-cols-12 gap-4 mt-4">
-					<section className="col-span-12 md:col-span-7">
+				<div className="grid grid-cols-12 gap-6 mt-4">
+					<section className="col-span-12 md:col-span-8">
+						<h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-kumo-muted">
+							Emails
+						</h3>
+						<EmailTimeline
+							messages={messages}
+							expandedId={expandedMessageId}
+							onToggle={(msgId) =>
+								setExpandedMessageId(expandedMessageId === msgId ? null : msgId)
+							}
+							onOpenThread={setSelectedThreadId}
+						/>
+					</section>
+					<section className="col-span-12 md:col-span-4">
 						<h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-kumo-muted">
 							Activity
 						</h3>
-						<ActivityList events={events} />
-					</section>
-					<section className="col-span-12 md:col-span-5">
-						<h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-kumo-muted">
-							Threads
-						</h3>
-						<ThreadsList
-							threads={threads}
-							onOpen={setSelectedThreadId}
-							selectedId={selectedThreadId}
-						/>
+						<ActivitySidebar events={events} />
 					</section>
 				</div>
 			</main>
@@ -130,6 +261,48 @@ export default function MissionDetail() {
 					threadId={selectedThreadId}
 					onClose={() => setSelectedThreadId(null)}
 				/>
+			)}
+		</div>
+	);
+}
+
+function dropStoredMissionId(id: string) {
+	if (typeof window === "undefined") return;
+	try {
+		const key = "missions.ids";
+		const ids: string[] = JSON.parse(localStorage.getItem(key) ?? "[]");
+		localStorage.setItem(key, JSON.stringify(ids.filter((x) => x !== id)));
+	} catch {
+		// no-op
+	}
+}
+
+// ── Answer headline ─────────────────────────────────────────────────
+
+function AnswerCard({
+	summary,
+	fromLabel,
+	answeredAt,
+}: {
+	summary: string;
+	fromLabel: string | null;
+	answeredAt: string | null;
+}) {
+	return (
+		<div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-5 py-4 shadow-sm">
+			<div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-emerald-700">
+				<span aria-hidden>●</span>
+				<span>Answered</span>
+			</div>
+			<p className="mt-1 font-serif text-xl text-emerald-950 leading-snug">
+				{summary}
+			</p>
+			{(fromLabel || answeredAt) && (
+				<p className="mt-2 text-xs text-emerald-800/80">
+					{fromLabel ? `— from ${fromLabel}` : ""}
+					{fromLabel && answeredAt ? " · " : ""}
+					{answeredAt ? formatRelative(answeredAt) : ""}
+				</p>
 			)}
 		</div>
 	);
@@ -246,95 +419,230 @@ function ApprovalCard({
 	);
 }
 
-// ── Activity list ───────────────────────────────────────────────────
+// ── Email timeline (main column) ─────────────────────────────────────
 
-function ActivityList({ events }: { events: ActivityEvent[] }) {
+function EmailTimeline({
+	messages,
+	expandedId,
+	onToggle,
+	onOpenThread,
+}: {
+	messages: TimelineMessage[];
+	expandedId: string | null;
+	onToggle: (id: string) => void;
+	onOpenThread: (threadId: string) => void;
+}) {
+	if (messages.length === 0) {
+		return (
+			<div className="rounded-lg border border-kumo-subtle bg-kumo-base p-8 text-center text-sm text-kumo-muted">
+				No emails yet. The agent is still researching.
+			</div>
+		);
+	}
+
+	// Group consecutive messages sharing a thread so the reader sees the
+	// conversation flow. Sort newest first at the group level.
+	const groups = useMemo(() => groupByThread(messages), [messages]);
+
+	return (
+		<ul className="space-y-3">
+			{groups.map((group) => (
+				<li
+					key={group.thread_id}
+					className="overflow-hidden rounded-lg border border-kumo-subtle bg-kumo-base"
+				>
+					<div className="flex items-center justify-between border-b border-kumo-subtle bg-kumo-recessed/50 px-4 py-2">
+						<div className="min-w-0 flex-1">
+							<div className="truncate text-sm font-medium text-kumo-strong">
+								{group.subject ?? "(no subject)"}
+							</div>
+							<div className="text-xs text-kumo-muted">
+								{group.target_name ?? group.target_email ?? "(target)"} ·{" "}
+								{group.messages.length} message
+								{group.messages.length === 1 ? "" : "s"} · {group.status}
+							</div>
+						</div>
+						<button
+							onClick={() => onOpenThread(group.thread_id)}
+							className="shrink-0 text-xs text-amber-600 hover:text-amber-700"
+						>
+							Open thread →
+						</button>
+					</div>
+					<ul className="divide-y divide-kumo-subtle">
+						{group.messages.map((m) => (
+							<EmailRow
+								key={m.id}
+								message={m}
+								expanded={expandedId === m.id}
+								onToggle={() => onToggle(m.id)}
+							/>
+						))}
+					</ul>
+				</li>
+			))}
+		</ul>
+	);
+}
+
+interface ThreadGroup {
+	thread_id: string;
+	subject: string | null;
+	status: string;
+	target_email: string | null;
+	target_name: string | null;
+	messages: TimelineMessage[];
+	last_at: string;
+}
+
+function groupByThread(messages: TimelineMessage[]): ThreadGroup[] {
+	const byId = new Map<string, ThreadGroup>();
+	for (const m of messages) {
+		const existing = byId.get(m.thread_id);
+		if (existing) {
+			existing.messages.push(m);
+			if (m.sent_at > existing.last_at) existing.last_at = m.sent_at;
+		} else {
+			byId.set(m.thread_id, {
+				thread_id: m.thread_id,
+				subject: m.thread_subject,
+				status: m.thread_status,
+				target_email: m.target_email,
+				target_name: m.target_name,
+				messages: [m],
+				last_at: m.sent_at,
+			});
+		}
+	}
+	return Array.from(byId.values()).sort((a, b) =>
+		b.last_at.localeCompare(a.last_at),
+	);
+}
+
+function EmailRow({
+	message,
+	expanded,
+	onToggle,
+}: {
+	message: TimelineMessage;
+	expanded: boolean;
+	onToggle: () => void;
+}) {
+	const out = message.direction === "out";
+	return (
+		<li>
+			<button
+				onClick={onToggle}
+				className="w-full px-4 py-3 text-left hover:bg-kumo-recessed/40"
+			>
+				<div className="flex items-start gap-3">
+					<span
+						className={`mt-0.5 shrink-0 text-xs font-mono ${
+							out ? "text-amber-600" : "text-emerald-600"
+						}`}
+						aria-hidden
+					>
+						{out ? "→" : "←"}
+					</span>
+					<div className="min-w-0 flex-1">
+						<div className="flex items-baseline justify-between gap-2">
+							<span className="truncate text-sm text-kumo-default">
+								{out ? `To ${message.to_addr}` : `From ${message.from_addr}`}
+							</span>
+							<span className="shrink-0 text-xs text-kumo-muted">
+								{new Date(message.sent_at).toLocaleString()}
+							</span>
+						</div>
+						{!expanded && (
+							<p className="mt-0.5 truncate text-xs text-kumo-muted">
+								{firstLine(message.body)}
+							</p>
+						)}
+					</div>
+				</div>
+				{expanded && (
+					<pre className="mt-3 whitespace-pre-wrap font-serif text-sm text-kumo-default">
+						{message.body}
+					</pre>
+				)}
+			</button>
+		</li>
+	);
+}
+
+function firstLine(body: string): string {
+	const trimmed = body.trim();
+	const newline = trimmed.indexOf("\n");
+	return newline === -1 ? trimmed : trimmed.slice(0, newline);
+}
+
+// ── Activity sidebar ─────────────────────────────────────────────────
+
+function ActivitySidebar({ events }: { events: ActivityEvent[] }) {
 	if (events.length === 0) {
 		return (
-			<div className="rounded-lg border border-kumo-subtle bg-kumo-base p-6 text-center text-sm text-kumo-muted">
-				Waiting for Otto…
+			<div className="rounded-lg border border-kumo-subtle bg-kumo-base p-5 text-center text-sm text-kumo-muted">
+				Waiting for the agent…
 			</div>
 		);
 	}
 	return (
-		<ul className="space-y-2">
+		<ol className="relative space-y-3">
 			{events.map((e) => (
-				<li
-					key={e.id}
-					className="rounded-md border border-kumo-subtle bg-kumo-base px-3 py-2 text-sm"
-				>
-					<div className="flex items-center justify-between text-xs text-kumo-muted">
-						<span>{e.type}</span>
-						<span>{new Date(e.timestamp).toLocaleTimeString()}</span>
-					</div>
-					<div className="mt-1 text-kumo-default">{e.description}</div>
-				</li>
+				<ActivityItem key={e.id} event={e} />
 			))}
-		</ul>
+		</ol>
 	);
 }
 
-// ── Threads list ────────────────────────────────────────────────────
-
-function ThreadsList({
-	threads,
-	onOpen,
-	selectedId,
-}: {
-	threads: Thread[];
-	onOpen: (id: string) => void;
-	selectedId: string | null;
-}) {
-	if (threads.length === 0) {
-		return (
-			<div className="rounded-lg border border-kumo-subtle bg-kumo-base p-6 text-center text-sm text-kumo-muted">
-				No threads yet.
-			</div>
-		);
-	}
-	const sorted = [...threads].sort(
-		(a, b) => rank(a.status) - rank(b.status),
-	);
+function ActivityItem({ event }: { event: ActivityEvent }) {
+	const { title, kind, detail } = labelForEvent(event);
+	const dotColor =
+		kind === "email"
+			? "bg-amber-500"
+			: kind === "approval"
+				? "bg-red-500"
+				: kind === "milestone"
+					? "bg-emerald-500"
+					: "bg-kumo-subtle";
 	return (
-		<ul className="space-y-2">
-			{sorted.map((t) => (
-				<li key={t.id}>
-					<button
-						onClick={() => onOpen(t.id)}
-						className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
-							selectedId === t.id
-								? "border-amber-400 bg-amber-50"
-								: "border-kumo-subtle bg-kumo-base hover:border-kumo-default"
-						}`}
-					>
-						<div className="flex items-center justify-between text-xs text-kumo-muted">
-							<span className="uppercase tracking-wider">{t.status}</span>
-							<span>{new Date(t.last_activity).toLocaleTimeString()}</span>
-						</div>
-						<div className="mt-1 text-kumo-default truncate">
-							{t.subject ?? "(no subject)"}
-						</div>
-					</button>
-				</li>
-			))}
-		</ul>
+		<li className="flex gap-3 text-sm">
+			<span
+				className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${dotColor}`}
+				aria-hidden
+			/>
+			<div className="min-w-0 flex-1">
+				<div className="flex items-baseline justify-between gap-2">
+					<span className="truncate font-medium text-kumo-default">
+						{title}
+					</span>
+					<span className="shrink-0 text-xs text-kumo-inactive">
+						{new Date(event.timestamp).toLocaleTimeString([], {
+							hour: "2-digit",
+							minute: "2-digit",
+						})}
+					</span>
+				</div>
+				<p className="text-xs text-kumo-muted leading-snug">
+					{detail ?? event.description}
+				</p>
+			</div>
+		</li>
 	);
 }
 
-function rank(status: string) {
-	const order = [
-		"awaiting", // needs-you-ish
-		"booked",
-		"active",
-		"human",
-		"parked",
-		"declined",
-	];
-	const i = order.indexOf(status);
-	return i === -1 ? 99 : i;
+function formatRelative(iso: string): string {
+	const diff = Date.now() - new Date(iso).getTime();
+	const min = Math.floor(diff / 60000);
+	if (min < 1) return "just now";
+	if (min < 60) return `${min}m ago`;
+	const hr = Math.floor(min / 60);
+	if (hr < 24) return `${hr}h ago`;
+	const d = Math.floor(hr / 24);
+	return `${d}d ago`;
 }
 
-// ── Thread drawer ───────────────────────────────────────────────────
+// ── Thread drawer (compose / take-over) ──────────────────────────────
 
 function ThreadDrawer({
 	missionId,

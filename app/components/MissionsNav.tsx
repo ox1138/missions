@@ -6,6 +6,7 @@ const tabs = [
 	{ to: "/", label: "Missions", end: true },
 	{ to: "/people", label: "People", end: false },
 	{ to: "/agents", label: "Agents", end: false },
+	{ to: "/you", label: "You", end: false },
 ];
 
 export function MissionsNav() {

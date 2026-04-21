@@ -299,6 +299,7 @@ async function advanceToOutreach(
 	const agentEmail = `${agent.identity.email_local_part}@${await fetchDomain(env)}`;
 	const userName = await fetchUserName(env);
 	const userEmail = await fetchUserEmail(env);
+	const userProfile = await fetchUserProfile(env);
 
 	const targets = await mdo.listTargets(missionId);
 	const pending = targets.filter((t) => t.status === "pending");
@@ -339,6 +340,8 @@ async function advanceToOutreach(
 			missionBrief: mission.brief,
 			userName,
 			userEmail,
+			userRole: userProfile.role,
+			userBio: userProfile.bio,
 			agent: agent.identity,
 			agentEmail,
 			memory: agent.memory,
@@ -526,6 +529,22 @@ async function applyReplyAction(
 				body: result.draft_reply.body,
 				agentId: mission.agent_id,
 			});
+			// Mission-resolution branch: the classifier judged this reply
+			// satisfied the brief. Record the answer and mark the thread
+			// booked — setThreadStatus triggers evaluateCompletion, which
+			// transitions the mission to `complete` once all threads are
+			// terminal.
+			if (result.mission_answered && result.answer_summary) {
+				await mdo.setAnswer(mission.id, result.answer_summary);
+				await mdo.logActivity({
+					missionId: mission.id,
+					type: "mission.answered",
+					description: result.answer_summary,
+					metadata: { thread_id: thread.id },
+				});
+				await mdo.setThreadStatus(thread.id, "booked");
+				return;
+			}
 			await mdo.setThreadStatus(
 				thread.id,
 				result.action === "auto_reply_toward_handoff" ? "awaiting" : "active",
@@ -1025,4 +1044,12 @@ async function fetchUserEmail(env: Env): Promise<string> {
 	const stub = env.USER_DO.get(env.USER_DO.idFromName(DEFAULT_USER_ID));
 	const user = await stub.getUser(DEFAULT_USER_ID);
 	return user?.email ?? "user@example.com";
+}
+
+async function fetchUserProfile(
+	env: Env,
+): Promise<{ role: string | null; bio: string | null }> {
+	const stub = env.USER_DO.get(env.USER_DO.idFromName(DEFAULT_USER_ID));
+	const user = await stub.getUser(DEFAULT_USER_ID);
+	return { role: user?.role ?? null, bio: user?.bio ?? null };
 }

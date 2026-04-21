@@ -39,6 +39,8 @@ export interface User {
 	name: string | null;
 	domain: string;
 	created_at: string;
+	role: string | null;
+	bio: string | null;
 }
 
 export interface AgentIdentity {
@@ -78,6 +80,15 @@ export interface Mission {
 	completion_condition: string | null;
 	created_at: string;
 	completed_at: string | null;
+	answer_summary: string | null;
+	answered_at: string | null;
+}
+
+export interface MissionSummary {
+	mission: Mission;
+	emails_sent: number;
+	replies_received: number;
+	thread_count: number;
 }
 
 export interface Thread {
@@ -112,6 +123,13 @@ export interface Message {
 	sent_at: string;
 	message_id: string | null;
 	in_reply_to: string | null;
+}
+
+export interface TimelineMessage extends Message {
+	thread_subject: string | null;
+	thread_status: string;
+	target_email: string | null;
+	target_name: string | null;
 }
 
 export interface Approval {
@@ -164,6 +182,11 @@ export const missionsApi = {
 			body: JSON.stringify(input),
 		}),
 	me: () => request<{ user: User | null }>("/me"),
+	updateMe: (patch: { name?: string | null; role?: string | null; bio?: string | null }) =>
+		request<{ user: User | null }>("/me", {
+			method: "PATCH",
+			body: JSON.stringify(patch),
+		}),
 
 	// Agents
 	listAgents: () => request<{ agents: AgentIdentity[] }>("/agents"),
@@ -194,7 +217,7 @@ export const missionsApi = {
 			body: JSON.stringify(input),
 		}),
 	listMissions: (ids: string[]) =>
-		request<{ missions: Mission[] }>(
+		request<{ missions: MissionSummary[] }>(
 			`/missions?ids=${encodeURIComponent(ids.join(","))}`,
 		),
 	getMission: (id: string) =>
@@ -208,6 +231,8 @@ export const missionsApi = {
 		request<{ events: ActivityEvent[] }>(
 			`/missions/${id}/activity?limit=${limit}`,
 		),
+	getMissionMessages: (id: string) =>
+		request<{ messages: TimelineMessage[] }>(`/missions/${id}/messages`),
 	getResearchLog: (id: string) =>
 		request<{ entries: { id: string; timestamp: string; type: string; content: string; source_url: string | null; related_contact_id: string | null }[] }>(
 			`/missions/${id}/research-log`,
@@ -236,6 +261,13 @@ export const missionsApi = {
 		request<{ ok: boolean }>(`/missions/${id}/resume`, { method: "POST" }),
 	cancelMission: (id: string) =>
 		request<{ ok: boolean }>(`/missions/${id}/cancel`, { method: "POST" }),
+	updateMissionBrief: (id: string, brief: string) =>
+		request<{ mission: Mission }>(`/missions/${id}`, {
+			method: "PATCH",
+			body: JSON.stringify({ brief }),
+		}),
+	deleteMission: (id: string) =>
+		request<{ ok: boolean }>(`/missions/${id}`, { method: "DELETE" }),
 
 	// Contacts
 	listContacts: () => request<{ contacts: Contact[] }>("/contacts"),

@@ -57,4 +57,11 @@ export const userMigrations: Migration[] = [
 			CREATE INDEX idx_reply_tokens_mission ON reply_tokens(mission_id);
 		`,
 	},
+	{
+		name: "3_user_profile",
+		sql: `
+			ALTER TABLE users ADD COLUMN role TEXT;
+			ALTER TABLE users ADD COLUMN bio TEXT;
+		`,
+	},
 ];

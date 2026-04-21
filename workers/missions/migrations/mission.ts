@@ -110,4 +110,11 @@ export const missionMigrations: Migration[] = [
 			CREATE INDEX idx_scheduled_status_fire ON scheduled_tasks(status, fire_at);
 		`,
 	},
+	{
+		name: "3_mission_answer_fields",
+		sql: `
+			ALTER TABLE missions ADD COLUMN answer_summary TEXT;
+			ALTER TABLE missions ADD COLUMN answered_at TEXT;
+		`,
+	},
 ];

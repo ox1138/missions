@@ -6,9 +6,8 @@
 import type { Env } from "../../types";
 
 // Default model choices. Drafting (Otto's emails, handoff) uses Sonnet for
-// quality; classification (reply triage, brief clarity) can go faster and
-// cheaper but we route to Sonnet for MVP simplicity — swap to Haiku or
-// Workers AI if cost becomes an issue.
+// quality; classification/triage (reply classifier, brief understanding,
+// target enrichment, research synthesis) uses Haiku for speed and cost.
 export const MODEL_DRAFT = "claude-sonnet-4-6";
 export const MODEL_CLASSIFY = "claude-haiku-4-5-20251001";
 

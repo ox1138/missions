@@ -9,6 +9,8 @@ export const users = sqliteTable("users", {
 	name: text("name"),
 	domain: text("domain").notNull(),
 	created_at: text("created_at").notNull(),
+	role: text("role"),
+	bio: text("bio"),
 });
 
 export type ContactOutcome =

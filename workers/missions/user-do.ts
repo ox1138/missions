@@ -108,6 +108,8 @@ export class UserDO extends DurableObject<Env> {
 		name: string | null;
 		domain: string;
 		created_at: string;
+		role: string | null;
+		bio: string | null;
 	} | null> {
 		const rows = await this.db
 			.select()
@@ -121,8 +123,25 @@ export class UserDO extends DurableObject<Env> {
 					name: string | null;
 					domain: string;
 					created_at: string;
+					role: string | null;
+					bio: string | null;
 			  }
 			| undefined) ?? null;
+	}
+
+	async updateUser(
+		userId: string,
+		patch: { name?: string | null; role?: string | null; bio?: string | null },
+	): Promise<void> {
+		const next: Record<string, string | null> = {};
+		if (patch.name !== undefined) next.name = patch.name;
+		if (patch.role !== undefined) next.role = patch.role;
+		if (patch.bio !== undefined) next.bio = patch.bio;
+		if (Object.keys(next).length === 0) return;
+		await this.db
+			.update(schema.users)
+			.set(next)
+			.where(eq(schema.users.id, userId));
 	}
 
 	async getContactByEmail(
@@ -289,6 +308,15 @@ export class UserDO extends DurableObject<Env> {
 			threadId: row.thread_id,
 			targetId: row.target_id,
 		};
+	}
+
+	// Remove every contact_activity row tied to a mission. Called when a
+	// mission is deleted so stale "active thread" signals don't leak into
+	// future missions' triage.
+	async deleteActivityForMission(missionId: string): Promise<void> {
+		await this.db
+			.delete(schema.contact_activity)
+			.where(eq(schema.contact_activity.mission_id, missionId));
 	}
 
 	async listContacts(

@@ -11,6 +11,8 @@ export interface OutreachDraftInput {
 	missionBrief: string;
 	userName: string;
 	userEmail: string;
+	userRole?: string | null;
+	userBio?: string | null;
 	agent: Pick<AgentIdentity, "name" | "voice" | "signature" | "bio" | "email_local_part">;
 	agentEmail: string; // e.g. otto@missions.polen.so
 	memory: AgentMemory | null;
@@ -70,13 +72,20 @@ export async function runOutreachDraft(
 ): Promise<OutreachDraftResult> {
 	const system = SYSTEM_TEMPLATE(input.agent);
 
+	const userProfileBlock = [
+		input.userRole ? `Role: ${input.userRole}` : null,
+		input.userBio ? `About: ${input.userBio}` : null,
+	]
+		.filter(Boolean)
+		.join("\n");
+
 	const userMsg = `Mission brief:
 """
 ${input.missionBrief}
 """
 
 User: ${input.userName} <${input.userEmail}>
-Agent sends from: ${input.agentEmail}
+${userProfileBlock ? `${userProfileBlock}\n` : ""}Agent sends from: ${input.agentEmail}
 
 User memory (what you already know about them):
 ${formatMemory(input.memory)}

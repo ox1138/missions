@@ -27,6 +27,8 @@ export interface MissionRow {
 	completion_condition: string | null;
 	created_at: string;
 	completed_at: string | null;
+	answer_summary: string | null;
+	answered_at: string | null;
 }
 
 export interface TargetRow {
@@ -106,6 +108,32 @@ function nowIso() {
 	return new Date().toISOString();
 }
 
+// Map a terminal thread status to the contact outcome a future mission's
+// triage should see. Non-terminal statuses return null so we don't
+// overwrite a prior outcome with something noisy.
+function threadStatusToOutcome(
+	status: ThreadStatus,
+): "booked" | "declined" | "ghosted" | null {
+	switch (status) {
+		case "booked":
+			return "booked";
+		case "declined":
+			return "declined";
+		case "parked":
+			return "ghosted";
+		case "active":
+		case "awaiting":
+			// Mission ended with the thread still open → treat as a ghost so
+			// the triage doesn't think it's still in flight.
+			return "ghosted";
+		case "human":
+			// User took over; don't override whatever outcome they may set.
+			return null;
+		default:
+			return null;
+	}
+}
+
 export class MissionDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
 	db: ReturnType<typeof drizzle>;
@@ -136,6 +164,8 @@ export class MissionDO extends DurableObject<Env> {
 				: null,
 			created_at: nowIso(),
 			completed_at: null,
+			answer_summary: null,
+			answered_at: null,
 		};
 		await this.db.insert(schema.missions).values(row);
 		await this.logActivity({
@@ -155,6 +185,13 @@ export class MissionDO extends DurableObject<Env> {
 		return (rows[0] as MissionRow | undefined) ?? null;
 	}
 
+	async setAnswer(id: string, summary: string): Promise<void> {
+		await this.db
+			.update(schema.missions)
+			.set({ answer_summary: summary, answered_at: nowIso() })
+			.where(eq(schema.missions.id, id));
+	}
+
 	async setPhase(id: string, phase: MissionPhase): Promise<void> {
 		await this.db
 			.update(schema.missions)
@@ -169,6 +206,163 @@ export class MissionDO extends DurableObject<Env> {
 			type: "mission.phase_changed",
 			description: `phase → ${phase}`,
 		});
+		if (phase === "complete" || phase === "cancelled") {
+			await this.finalizeContactOutcomes(id);
+		}
+	}
+
+	// When a mission ends, stamp each contact with a final outcome so the
+	// next mission's triage doesn't see them as "active thread in flight".
+	private async finalizeContactOutcomes(missionId: string): Promise<void> {
+		const threads = await this.listThreads(missionId);
+		if (threads.length === 0) return;
+		const targets = await this.listTargets(missionId);
+		const targetsById = new Map(targets.map((t) => [t.id, t]));
+		const userStub = this.env.USER_DO.get(
+			this.env.USER_DO.idFromName("default"),
+		);
+		for (const thread of threads) {
+			const target = targetsById.get(thread.target_id);
+			if (!target) continue;
+			const outcome = threadStatusToOutcome(thread.status);
+			if (!outcome) continue;
+			await userStub.setOutcome("default", target.email, outcome);
+		}
+	}
+
+	async updateBrief(id: string, brief: string): Promise<MissionRow | null> {
+		const trimmed = brief.trim();
+		if (!trimmed) return this.getMission(id);
+		await this.db
+			.update(schema.missions)
+			.set({ brief: trimmed })
+			.where(eq(schema.missions.id, id));
+		await this.logActivity({
+			missionId: id,
+			type: "mission.brief_updated",
+			description: `Brief updated by user`,
+		});
+		return this.getMission(id);
+	}
+
+	async deleteMission(id: string): Promise<void> {
+		// Drop cross-DO contact_activity rows first so a future triage on the
+		// same email sees a clean slate. Best-effort — if UserDO fails we
+		// still want the local mission wiped.
+		try {
+			const userStub = this.env.USER_DO.get(
+				this.env.USER_DO.idFromName("default"),
+			);
+			await userStub.deleteActivityForMission(id);
+		} catch (err) {
+			console.error(
+				`[mission-do] deleteActivityForMission failed for ${id}:`,
+				(err as Error).message,
+			);
+		}
+		const threadRows = (await this.db
+			.select({ id: schema.threads.id })
+			.from(schema.threads)
+			.where(eq(schema.threads.mission_id, id))) as Array<{ id: string }>;
+		for (const t of threadRows) {
+			await this.db
+				.delete(schema.messages)
+				.where(eq(schema.messages.thread_id, t.id));
+		}
+		await this.db
+			.delete(schema.threads)
+			.where(eq(schema.threads.mission_id, id));
+		await this.db
+			.delete(schema.targets)
+			.where(eq(schema.targets.mission_id, id));
+		await this.db
+			.delete(schema.approvals)
+			.where(eq(schema.approvals.mission_id, id));
+		await this.db
+			.delete(schema.activity_events)
+			.where(eq(schema.activity_events.mission_id, id));
+		await this.db
+			.delete(schema.research_log)
+			.where(eq(schema.research_log.mission_id, id));
+		await this.db
+			.delete(schema.scheduled_tasks)
+			.where(eq(schema.scheduled_tasks.mission_id, id));
+		await this.db
+			.delete(schema.missions)
+			.where(eq(schema.missions.id, id));
+		await this.ctx.storage.deleteAlarm();
+	}
+
+	// Derived counts for cards and headers. Cheap — all data is DO-local.
+	async getMissionSummary(id: string): Promise<{
+		mission: MissionRow;
+		emails_sent: number;
+		replies_received: number;
+		thread_count: number;
+	} | null> {
+		const mission = await this.getMission(id);
+		if (!mission) return null;
+		const threadRows = await this.db
+			.select({ id: schema.threads.id })
+			.from(schema.threads)
+			.where(eq(schema.threads.mission_id, id));
+		const threadIds = (threadRows as Array<{ id: string }>).map((r) => r.id);
+		let emails_sent = 0;
+		let replies_received = 0;
+		for (const tid of threadIds) {
+			const msgs = (await this.db
+				.select({ direction: schema.messages.direction })
+				.from(schema.messages)
+				.where(eq(schema.messages.thread_id, tid))) as Array<{
+				direction: "in" | "out";
+			}>;
+			for (const m of msgs) {
+				if (m.direction === "out") emails_sent += 1;
+				else replies_received += 1;
+			}
+		}
+		return {
+			mission,
+			emails_sent,
+			replies_received,
+			thread_count: threadIds.length,
+		};
+	}
+
+	// Re-check whether a monitoring mission can auto-complete. Called from
+	// setThreadStatus so any terminal thread transition is a candidate.
+	// Terminal statuses: booked, declined, parked (see ThreadStatus). "human"
+	// threads still count as terminal for the agent — the user owns them.
+	async evaluateCompletion(id: string): Promise<void> {
+		const mission = await this.getMission(id);
+		if (!mission) return;
+		if (mission.phase !== "monitoring") return;
+		const threads = await this.listThreads(id);
+		if (threads.length === 0) return;
+		const terminal: ThreadStatus[] = [
+			"booked",
+			"declined",
+			"parked",
+			"human",
+		];
+		const allTerminal = threads.every((t) =>
+			terminal.includes(t.status as ThreadStatus),
+		);
+		if (!allTerminal) return;
+		await this.db
+			.update(schema.missions)
+			.set({ phase: "complete", completed_at: nowIso() })
+			.where(eq(schema.missions.id, id));
+		await this.logActivity({
+			missionId: id,
+			type: "mission.auto_completed",
+			description: "All threads reached a terminal state; mission complete.",
+			metadata: {
+				thread_count: threads.length,
+				statuses: threads.map((t) => t.status),
+			},
+		});
+		await this.finalizeContactOutcomes(id);
 	}
 
 	// ── Targets ─────────────────────────────────────────────────────
@@ -253,6 +447,8 @@ export class MissionDO extends DurableObject<Env> {
 			.update(schema.threads)
 			.set({ status, last_activity: nowIso() })
 			.where(eq(schema.threads.id, id));
+		const thread = await this.getThread(id);
+		if (thread) await this.evaluateCompletion(thread.mission_id);
 	}
 
 	// ── Messages ────────────────────────────────────────────────────
@@ -274,6 +470,59 @@ export class MissionDO extends DurableObject<Env> {
 			.where(eq(schema.messages.thread_id, threadId))
 			.orderBy(schema.messages.sent_at);
 		return rows as MessageRow[];
+	}
+
+	// All messages for a mission, ordered oldest-first, with thread/target
+	// context folded in so the UI can render a single timeline without a
+	// dozen extra round-trips.
+	async listAllMessages(missionId: string): Promise<
+		Array<
+			MessageRow & {
+				thread_subject: string | null;
+				thread_status: string;
+				target_email: string | null;
+				target_name: string | null;
+			}
+		>
+	> {
+		const threadRows = (await this.db
+			.select()
+			.from(schema.threads)
+			.where(eq(schema.threads.mission_id, missionId))) as ThreadRow[];
+		if (threadRows.length === 0) return [];
+		const targetRows = (await this.db
+			.select()
+			.from(schema.targets)
+			.where(eq(schema.targets.mission_id, missionId))) as TargetRow[];
+		const targetsById = new Map(targetRows.map((t) => [t.id, t]));
+
+		const out: Array<
+			MessageRow & {
+				thread_subject: string | null;
+				thread_status: string;
+				target_email: string | null;
+				target_name: string | null;
+			}
+		> = [];
+		for (const thread of threadRows) {
+			const msgs = (await this.db
+				.select()
+				.from(schema.messages)
+				.where(eq(schema.messages.thread_id, thread.id))
+				.orderBy(schema.messages.sent_at)) as MessageRow[];
+			const target = targetsById.get(thread.target_id);
+			for (const m of msgs) {
+				out.push({
+					...m,
+					thread_subject: thread.subject,
+					thread_status: thread.status,
+					target_email: target?.email ?? null,
+					target_name: target?.name ?? null,
+				});
+			}
+		}
+		out.sort((a, b) => a.sent_at.localeCompare(b.sent_at));
+		return out;
 	}
 
 	// ── Approvals ───────────────────────────────────────────────────

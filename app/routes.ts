@@ -21,6 +21,9 @@ export default [
 	route("agents", "routes/agents.index.tsx"),
 	route("agents/:role", "routes/agents.detail.tsx"),
 
+	// You — user profile (name, role, bio) threaded into agent prompts.
+	route("you", "routes/you.tsx"),
+
 	// Inherited agentic-inbox mailbox UI, kept accessible.
 	route("mailbox/:mailboxId", "routes/mailbox.tsx", [
 		index("routes/mailbox-index.tsx"),

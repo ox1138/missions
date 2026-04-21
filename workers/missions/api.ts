@@ -147,6 +147,17 @@ missionsApp.get("/me", async (c) => {
 	return c.json({ user });
 });
 
+missionsApp.patch("/me", async (c) => {
+	const patch = (await c.req.json().catch(() => ({}))) as {
+		name?: string | null;
+		role?: string | null;
+		bio?: string | null;
+	};
+	await userStub(c.env).updateUser(DEFAULT_USER_ID, patch);
+	const user = await userStub(c.env).getUser(DEFAULT_USER_ID);
+	return c.json({ user });
+});
+
 // ── Agents ───────────────────────────────────────────────────────────
 
 missionsApp.get("/agents", async (c) => {
@@ -226,13 +237,10 @@ missionsApp.get("/missions", async (c) => {
 	// Stub: no cross-DO index yet. UI will pass the mission IDs it's aware
 	// of (stored in localStorage per-user) and we fetch each.
 	const ids = (c.req.query("ids") ?? "").split(",").filter(Boolean);
-	const missions = await Promise.all(
-		ids.map(async (id) => {
-			const m = await missionStub(c.env, id).getMission(id);
-			return m;
-		}),
+	const summaries = await Promise.all(
+		ids.map(async (id) => missionStub(c.env, id).getMissionSummary(id)),
 	);
-	return c.json({ missions: missions.filter(Boolean) });
+	return c.json({ missions: summaries.filter(Boolean) });
 });
 
 missionsApp.get("/missions/:id", async (c) => {
@@ -257,6 +265,12 @@ missionsApp.get("/missions/:id/research-log", async (c) => {
 	const id = c.req.param("id");
 	const entries = await missionStub(c.env, id).listResearchLog(id);
 	return c.json({ entries });
+});
+
+missionsApp.get("/missions/:id/messages", async (c) => {
+	const id = c.req.param("id");
+	const messages = await missionStub(c.env, id).listAllMessages(id);
+	return c.json({ messages });
 });
 
 missionsApp.get("/missions/:id/threads/:threadId", async (c) => {
@@ -307,6 +321,23 @@ missionsApp.post("/missions/:id/resume", async (c) => {
 missionsApp.post("/missions/:id/cancel", async (c) => {
 	const id = c.req.param("id");
 	await missionStub(c.env, id).setPhase(id, "cancelled");
+	return c.json({ ok: true });
+});
+
+missionsApp.patch("/missions/:id", async (c) => {
+	const id = c.req.param("id");
+	const body = (await c.req.json().catch(() => ({}))) as { brief?: string };
+	if (typeof body.brief !== "string" || !body.brief.trim()) {
+		return c.json({ error: "brief is required" }, 400);
+	}
+	const mission = await missionStub(c.env, id).updateBrief(id, body.brief);
+	if (!mission) return c.json({ error: "not found" }, 404);
+	return c.json({ mission });
+});
+
+missionsApp.delete("/missions/:id", async (c) => {
+	const id = c.req.param("id");
+	await missionStub(c.env, id).deleteMission(id);
 	return c.json({ ok: true });
 });
 

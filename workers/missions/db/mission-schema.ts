@@ -25,6 +25,10 @@ export const missions = sqliteTable("missions", {
 	completion_condition: text("completion_condition"), // JSON
 	created_at: text("created_at").notNull(),
 	completed_at: text("completed_at"),
+	// Distilled one-liner answering the brief, written by the reply
+	// classifier when it judges the inbound reply satisfied the mission.
+	answer_summary: text("answer_summary"),
+	answered_at: text("answered_at"),
 });
 
 export const research_log = sqliteTable(

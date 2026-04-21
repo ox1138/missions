@@ -57,6 +57,13 @@ export interface ReplyClassifierResult {
 		name?: string;
 		context: string; // why they were referred, short
 	}>;
+	// True iff this inbound reply directly satisfies the mission brief's ask.
+	// When true, the workflow marks the mission resolved and surfaces
+	// `answer_summary` on the detail page.
+	mission_answered?: boolean;
+	// One-line distilled answer extracted from the inbound body, <=160 chars.
+	// Only set when mission_answered is true.
+	answer_summary?: string;
 }
 
 const SYSTEM = `You are the reply-triage head for an email agent. Read an inbound message and decide how the agent should respond.
@@ -81,6 +88,9 @@ BIAS: prefer auto_reply or auto_close. A short neutral reply the agent can send 
 ORTHOGONAL CONCERN — REFERRALS:
 If the reply points the agent toward someone else ("contact X instead", "you should talk to Y", "Z handles that"), also populate a "referrals" array with each person mentioned. Include their email if they gave one, their name if mentioned, and a short context line describing why they were suggested. Populate referrals INDEPENDENTLY of the action — the referral handoff is a separate decision the user will make. If the reply contains no referral, omit the field or return an empty array.
 
+ORTHOGONAL CONCERN — MISSION RESOLUTION:
+Decide whether this inbound reply directly and fully satisfies what the mission brief asked for. Read the brief literally: if the brief asks "ask Luke where to meet tomorrow" and the reply says "Lisbon's bus terminal, 8:30am", the mission is answered — set "mission_answered": true and put a crisp one-liner (<=160 chars) extracted from the inbound body into "answer_summary". If the reply only asks a clarifying question back, or gives partial info, or is a known_question unrelated to the brief's ask (e.g. they ask "who referred you?"), set "mission_answered": false and omit "answer_summary". This is INDEPENDENT of the action: a positive reply that sets up a future meeting is not "answered" unless the meeting details the brief asked for are now known. When in doubt, prefer false — a false negative just keeps the mission running; a false positive closes the mission prematurely.
+
 Output ONE JSON object. Include draft_reply / multi_choice / freeform_prompt ONLY for their respective actions.
 
 {
@@ -90,7 +100,9 @@ Output ONE JSON object. Include draft_reply / multi_choice / freeform_prompt ONL
   "multi_choice": { "prompt": "...", "options": [{ "id": "a", "label": "...", "suggested_reply": "..." }] },
   "freeform_prompt": "What the agent would ask the user",
   "rationale": "one-liner for the activity stream",
-  "referrals": [{ "email": "...", "name": "...", "context": "..." }]  // optional
+  "referrals": [{ "email": "...", "name": "...", "context": "..." }],  // optional
+  "mission_answered": false,                                             // true iff brief is satisfied
+  "answer_summary": "..."                                                 // required iff mission_answered
 }`;
 
 function formatMemory(memory: AgentMemory | null): string {
